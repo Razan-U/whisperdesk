@@ -1,0 +1,98 @@
+[
+  {
+    "file": "av-18.1.0-cp311-abi3-win_amd64.whl",
+    "sha256": "ea1480b7a8d5405cb5f382b344731bf125fd2c1c6fae3964f6c48595628387ff"
+  },
+  {
+    "file": "certifi-2026.7.22-py3-none-any.whl",
+    "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+  },
+  {
+    "file": "charset_normalizer-3.5.1-cp312-cp312-win_amd64.whl",
+    "sha256": "3617ac3cfd8b9888f145ad89dd6e692285834b0201c6074a5eeaad3fd4d668c2"
+  },
+  {
+    "file": "colorama-0.4.6-py2.py3-none-any.whl",
+    "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
+  },
+  {
+    "file": "ctranslate2-4.8.2-cp312-cp312-win_amd64.whl",
+    "sha256": "d94421d565d0de61c032998f737a18942b0f2bef40c0424b1846ec6f67300105"
+  },
+  {
+    "file": "faster_whisper-1.2.1-py3-none-any.whl",
+    "sha256": "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7"
+  },
+  {
+    "file": "filelock-4.0.4-py3-none-any.whl",
+    "sha256": "0df72be195ca7892216d16f2edce8d9b93a571f02402972020a8cff84c594c7b"
+  },
+  {
+    "file": "flatbuffers-25.12.19-py2.py3-none-any.whl",
+    "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4"
+  },
+  {
+    "file": "fsspec-2026.9.0-py3-none-any.whl",
+    "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f"
+  },
+  {
+    "file": "hf_xet-1.6.0-cp38-abi3-win_amd64.whl",
+    "sha256": "fb4fadde1b2b70bf4c0c14a6dccbe7194b1c28947fefd5bbe3fed9d940676c3b"
+  },
+  {
+    "file": "huggingface_hub-0.36.2-py3-none-any.whl",
+    "sha256": "48f0c8eac16145dfce371e9d2d7772854a4f591bcb56c9cf548accf531d54270"
+  },
+  {
+    "file": "idna-3.20-py3-none-any.whl",
+    "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+  },
+  {
+    "file": "numpy-2.3.5-cp312-cp312-win_amd64.whl",
+    "sha256": "86945f2ee6d10cdfd67bcb4069c1662dd711f7e2a4343db5cecec06b87cf31aa"
+  },
+  {
+    "file": "onnxruntime-1.30.0-cp312-cp312-win_amd64.whl",
+    "sha256": "f3501472571f1b1eee50e017851e7929f5ea37312d2d8c2494a19e8fc58b4a38"
+  },
+  {
+    "file": "packaging-26.3-py3-none-any.whl",
+    "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+  },
+  {
+    "file": "protobuf-7.36.2-cp310-abi3-win_amd64.whl",
+    "sha256": "a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353"
+  },
+  {
+    "file": "pyside6_essentials-6.11.2-cp310-abi3-win_amd64.whl",
+    "sha256": "c8a29def77032773a30879f7f24415b5395ad08592d147c170824ef4c735dfc1"
+  },
+  {
+    "file": "pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+    "sha256": "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b"
+  },
+  {
+    "file": "requests-2.34.2-py3-none-any.whl",
+    "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"
+  },
+  {
+    "file": "shiboken6-6.11.2-cp310-abi3-win_amd64.whl",
+    "sha256": "6ab0eba1c904455df621f9a6df3ca2bb896bab8670572d2bc4e37804ae91f19a"
+  },
+  {
+    "file": "tokenizers-0.23.2-cp310-abi3-win_amd64.whl",
+    "sha256": "2e96f5699d5249c9c64aa8412e044f727aae3a4098cf830f9901ec1afc361cde"
+  },
+  {
+    "file": "tqdm-4.70.1-py3-none-any.whl",
+    "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73"
+  },
+  {
+    "file": "typing_extensions-4.16.0-py3-none-any.whl",
+    "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+  },
+  {
+    "file": "urllib3-2.8.0-py3-none-any.whl",
+    "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"
+  }
+]

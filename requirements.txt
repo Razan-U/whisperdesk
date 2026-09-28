@@ -1,0 +1,6 @@
+faster-whisper==1.2.1
+PySide6-Essentials==6.11.2
+av==18.1.0
+ctranslate2==4.8.2
+numpy==2.3.5
+huggingface-hub==0.36.2
