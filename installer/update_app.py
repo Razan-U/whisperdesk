@@ -57,15 +57,10 @@ def replace_app(install, source, validate=True):
     target_file = source / 'whisperdesk' / '__init__.py'
     if not current_file.is_file() or not runtime.is_file():
         raise RuntimeError('Виберіть папку встановленого WhisperDesk 0.2 або новішого.')
-    if not target_file.is_file():
-        raise RuntimeError('Неповний пакет оновлення: відсутня інформація про версію.')
 
     current = read_version(current_file)
-    target = read_version(target_file)
     if version_key(current) < version_key('0.2.0'):
         raise RuntimeError('Автоматичне оновлення підтримується починаючи з WhisperDesk 0.2.')
-    if version_key(target) < version_key(current):
-        raise RuntimeError(f'Пакет {target} старіший за встановлену версію {current}.')
 
     lock = None
     if validate:
@@ -78,6 +73,16 @@ def replace_app(install, source, validate=True):
         lock.setStaleLockTime(0)
         if not lock.tryLock(100):
             raise RuntimeError('Спочатку закрийте WhisperDesk і повторіть оновлення.')
+
+    if not target_file.is_file():
+        if lock:
+            lock.unlock()
+        raise RuntimeError('Неповний пакет оновлення: відсутня інформація про версію.')
+    target = read_version(target_file)
+    if version_key(target) < version_key(current):
+        if lock:
+            lock.unlock()
+        raise RuntimeError(f'Пакет {target} старіший за встановлену версію {current}.')
 
     stage = install / ('.update-' + uuid.uuid4().hex)
     backup = install / ('app-backup-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
