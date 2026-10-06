@@ -176,3 +176,27 @@ def test_ui_smoke(tmp_path, monkeypatch, audio):
     assert '[00:00:13' in w.text.toPlainText()
     w.close()
     app.processEvents()
+
+
+def test_preflight_cancel_preserves_queue_state(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    from whisperdesk.ui import Window
+
+    app = QApplication.instance() or QApplication([])
+    w = Window(auto_start=False)
+    w.add_files([str(audio)])
+    task = w.selected()
+    task['status'] = 'error'
+    task['error'] = 'previous failure'
+    w.tasks.save()
+
+    monkeypatch.setattr(w, 'confirm_preflight', lambda: False)
+    w.start_queue()
+
+    assert not w.running_queue
+    assert w.process is None
+    assert task['status'] == 'error'
+    assert task['error'] == 'previous failure'
+    w.close()
+    app.processEvents()
