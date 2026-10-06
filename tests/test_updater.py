@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import struct
 
 import pytest
 
@@ -227,3 +228,68 @@ def test_fetch_releases_reports_both_network_paths_when_both_fail(monkeypatch):
 
     with pytest.raises(updater.UpdateError, match='Не вдалося перевірити оновлення'):
         updater.fetch_releases()
+
+
+def test_parse_dns_a_response():
+    # Minimal response: one question, one compressed A answer -> 140.82.121.4
+    qname = b'\x03api\x06github\x03com\x00'
+    header = struct.pack('!HHHHHH', 1, 0x8180, 1, 1, 0, 0)
+    question = qname + struct.pack('!HH', 1, 1)
+    answer = b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 60, 4) + bytes([140, 82, 121, 4])
+    assert updater._parse_dns_a_response(header + question + answer) == ['140.82.121.4']
+
+
+def test_open_with_direct_fallback_uses_public_dns_after_dns_failures(monkeypatch):
+    from urllib.error import URLError
+
+    request = updater.Request('https://api.github.com/repos/Razan-U/whisperdesk/releases')
+
+    class BrokenOpener:
+        def open(self, request, timeout=0):
+            raise URLError(OSError(11001, 'direct getaddrinfo failed'))
+
+    monkeypatch.setattr(
+        updater,
+        'urlopen',
+        lambda request, timeout=0: (_ for _ in ()).throw(URLError(OSError(11001, 'system getaddrinfo failed')))
+    )
+    monkeypatch.setattr(updater, 'build_opener', lambda *args: BrokenOpener())
+    monkeypatch.setattr(updater, '_open_with_public_dns', lambda request, timeout=0: Response(b'[]'))
+
+    response = updater._open_with_direct_fallback(request, 5)
+    assert response.read() == b'[]'
+
+
+def test_download_uses_public_dns_candidate_after_system_and_direct_dns_failures(tmp_path, monkeypatch):
+    from urllib.error import URLError
+
+    payload = b'public dns fallback bytes'
+    digest = hashlib.sha256(payload).hexdigest()
+    filename = 'WhisperDesk-Update-0.3.2-beta.5.exe'
+    info = {
+        'asset_name': filename,
+        'download_url': 'https://github.com/Razan-U/whisperdesk/releases/download/v0.3.2-beta.5/' + filename,
+        'api_download_url': 'https://api.github.com/repos/Razan-U/whisperdesk/releases/assets/99999',
+        'checksum_url': None,
+        'sha256': digest,
+        'size': len(payload),
+    }
+
+    class BrokenOpener:
+        def open(self, request, timeout=0):
+            raise URLError(OSError(11001, 'direct getaddrinfo failed'))
+
+    monkeypatch.setattr(
+        updater,
+        'urlopen',
+        lambda request, timeout=0: (_ for _ in ()).throw(URLError(OSError(11001, 'system getaddrinfo failed')))
+    )
+    monkeypatch.setattr(updater, 'build_opener', lambda *args: BrokenOpener())
+    monkeypatch.setattr(
+        updater,
+        '_open_with_public_dns',
+        lambda request, timeout=0: Response(payload, {'Content-Length': str(len(payload))})
+    )
+
+    result = updater.download_update(info, tmp_path)
+    assert result.read_bytes() == payload

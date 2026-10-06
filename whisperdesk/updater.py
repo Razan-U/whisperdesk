@@ -8,6 +8,9 @@ import json
 import os
 import re
 import subprocess
+import socket
+import struct
+import threading
 
 REPOSITORY = 'Razan-U/whisperdesk'
 RELEASES_URL = f'https://api.github.com/repos/{REPOSITORY}/releases?per_page=30'
@@ -17,6 +20,116 @@ VERSION_RE = re.compile(
     r'^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$'
 )
 SHA256_RE = re.compile(r'\b([0-9a-fA-F]{64})\b')
+PUBLIC_DNS_SERVERS = ('1.1.1.1', '8.8.8.8')
+_DNS_OVERRIDE_LOCK = threading.Lock()
+
+
+def _allowed_github_host(host):
+    host = str(host or '').lower().rstrip('.')
+    return host in {'github.com', 'api.github.com'} or host.endswith('.githubusercontent.com')
+
+
+def _is_dns_failure(exc):
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).lower()
+        errno = getattr(current, 'errno', None)
+        if errno in {11001, getattr(socket, 'EAI_NONAME', -2), getattr(socket, 'EAI_AGAIN', -3)}:
+            return True
+        if 'getaddrinfo failed' in text or 'name or service not known' in text or 'temporary failure in name resolution' in text:
+            return True
+        current = getattr(current, 'reason', None) or getattr(current, '__cause__', None)
+    return False
+
+
+def _skip_dns_name(data, offset):
+    while offset < len(data):
+        length = data[offset]
+        if length == 0:
+            return offset + 1
+        if length & 0xC0 == 0xC0:
+            return offset + 2
+        offset += 1 + length
+    raise ValueError('Пошкоджена DNS-відповідь.')
+
+
+def _parse_dns_a_response(data):
+    if len(data) < 12:
+        raise ValueError('Коротка DNS-відповідь.')
+    _ident, flags, qdcount, ancount, _nscount, _arcount = struct.unpack('!HHHHHH', data[:12])
+    if flags & 0x000F:
+        return []
+    offset = 12
+    for _ in range(qdcount):
+        offset = _skip_dns_name(data, offset)
+        offset += 4
+        if offset > len(data):
+            raise ValueError('Пошкоджена DNS-відповідь.')
+    result = []
+    for _ in range(ancount):
+        offset = _skip_dns_name(data, offset)
+        if offset + 10 > len(data):
+            raise ValueError('Пошкоджена DNS-відповідь.')
+        rtype, rclass, _ttl, rdlength = struct.unpack('!HHIH', data[offset:offset + 10])
+        offset += 10
+        rdata = data[offset:offset + rdlength]
+        offset += rdlength
+        if rtype == 1 and rclass == 1 and rdlength == 4:
+            result.append(socket.inet_ntoa(rdata))
+    return result
+
+
+def _public_dns_a(host, timeout=2.0):
+    labels = str(host).strip('.').split('.')
+    qname = b''.join(bytes([len(label.encode('idna'))]) + label.encode('idna') for label in labels) + b'\x00'
+    ident = int.from_bytes(os.urandom(2), 'big')
+    packet = struct.pack('!HHHHHH', ident, 0x0100, 1, 0, 0, 0) + qname + struct.pack('!HH', 1, 1)
+    errors = []
+    for server in PUBLIC_DNS_SERVERS:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(timeout)
+            sock.sendto(packet, (server, 53))
+            data, _ = sock.recvfrom(4096)
+            ips = _parse_dns_a_response(data)
+            if ips:
+                return ips
+        except OSError as exc:
+            errors.append(str(exc))
+        finally:
+            sock.close()
+    raise OSError('Публічний DNS не повернув IPv4 для GitHub: ' + '; '.join(errors[-2:]))
+
+
+def _open_with_public_dns(request, timeout):
+    host = urlparse(request.full_url).hostname
+    if not _allowed_github_host(host):
+        raise UpdateError('Public-DNS fallback дозволений лише для GitHub.')
+    opener = build_opener(ProxyHandler({}))
+    cache = {}
+    with _DNS_OVERRIDE_LOCK:
+        original = socket.getaddrinfo
+
+        def patched_getaddrinfo(target, port, family=0, socktype=0, proto=0, flags=0):
+            target_text = target.decode() if isinstance(target, bytes) else str(target)
+            if _allowed_github_host(target_text):
+                ips = cache.get(target_text)
+                if ips is None:
+                    ips = _public_dns_a(target_text)
+                    cache[target_text] = ips
+                stype = socktype or socket.SOCK_STREAM
+                ptype = proto or socket.IPPROTO_TCP
+                return [(socket.AF_INET, stype, ptype, '', (ip, port)) for ip in ips]
+            return original(target, port, family, socktype, proto, flags)
+
+        socket.getaddrinfo = patched_getaddrinfo
+        try:
+            return opener.open(request, timeout=timeout)
+        finally:
+            socket.getaddrinfo = original
+
 
 
 class UpdateError(RuntimeError):
@@ -24,7 +137,7 @@ class UpdateError(RuntimeError):
 
 
 def _open_with_direct_fallback(request, timeout):
-    """Try normal urllib networking, then bypass the system proxy."""
+    """Try system networking, no-proxy networking, then public DNS for GitHub only."""
     try:
         return urlopen(request, timeout=timeout)
     except HTTPError:
@@ -35,6 +148,15 @@ def _open_with_direct_fallback(request, timeout):
         except HTTPError:
             raise
         except (URLError, OSError) as direct:
+            if _is_dns_failure(primary) or _is_dns_failure(direct):
+                try:
+                    return _open_with_public_dns(request, timeout)
+                except HTTPError:
+                    raise
+                except (URLError, OSError, UpdateError) as public_dns:
+                    raise URLError(
+                        f'system: {primary}; direct: {direct}; public-dns: {public_dns}'
+                    ) from public_dns
             raise URLError(f'system: {primary}; direct: {direct}') from direct
 
 
@@ -216,6 +338,8 @@ def download_update(info, destination, progress=None, timeout=30):
     # A stale/broken Windows proxy can resolve api.github.com but fail on the
     # release/CDN hop. Retrying directly keeps public GitHub updates usable.
     candidates += [(kind + '-direct', url, True) for kind, url, _ in list(candidates)]
+    candidates += [(kind.replace('-direct', '') + '-public-dns', url, 'public-dns')
+                   for kind, url, _ in list(candidates) if kind.endswith('-direct')]
 
     errors = []
     for kind, url, direct in candidates:
@@ -227,9 +351,12 @@ def download_update(info, destination, progress=None, timeout=30):
             headers['Accept'] = 'application/octet-stream'
             headers['X-GitHub-Api-Version'] = '2022-11-28'
         request = Request(url, headers=headers)
-        opener = build_opener(ProxyHandler({})) if direct else None
+        opener = build_opener(ProxyHandler({})) if direct is True else None
         try:
-            response_cm = opener.open(request, timeout=timeout) if opener else urlopen(request, timeout=timeout)
+            if direct == 'public-dns':
+                response_cm = _open_with_public_dns(request, timeout)
+            else:
+                response_cm = opener.open(request, timeout=timeout) if opener else urlopen(request, timeout=timeout)
             with response_cm as response, part.open('wb') as output:
                 total = expected_size or int(response.headers.get('Content-Length') or 0)
                 while True:
