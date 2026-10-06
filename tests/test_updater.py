@@ -190,3 +190,40 @@ def test_download_falls_back_to_api_asset_after_release_dns_error(tmp_path, monk
     assert result.read_bytes() == payload
     assert calls[0].startswith('https://github.com/')
     assert calls[1].startswith('https://api.github.com/')
+
+
+def test_fetch_releases_falls_back_without_system_proxy(monkeypatch):
+    from urllib.error import URLError
+
+    payload = b'[]'
+
+    class DirectOpener:
+        def open(self, request, timeout=0):
+            return Response(payload, {'Content-Length': str(len(payload))})
+
+    monkeypatch.setattr(
+        updater,
+        'urlopen',
+        lambda request, timeout=0: (_ for _ in ()).throw(URLError(OSError(11001, 'getaddrinfo failed')))
+    )
+    monkeypatch.setattr(updater, 'build_opener', lambda *args: DirectOpener())
+
+    assert updater.fetch_releases() == []
+
+
+def test_fetch_releases_reports_both_network_paths_when_both_fail(monkeypatch):
+    from urllib.error import URLError
+
+    class BrokenOpener:
+        def open(self, request, timeout=0):
+            raise URLError(OSError(11001, 'direct getaddrinfo failed'))
+
+    monkeypatch.setattr(
+        updater,
+        'urlopen',
+        lambda request, timeout=0: (_ for _ in ()).throw(URLError(OSError(11001, 'system getaddrinfo failed')))
+    )
+    monkeypatch.setattr(updater, 'build_opener', lambda *args: BrokenOpener())
+
+    with pytest.raises(updater.UpdateError, match='Не вдалося перевірити оновлення'):
+        updater.fetch_releases()

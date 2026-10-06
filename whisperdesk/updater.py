@@ -23,6 +23,22 @@ class UpdateError(RuntimeError):
     pass
 
 
+def _open_with_direct_fallback(request, timeout):
+    """Try normal urllib networking, then bypass the system proxy."""
+    try:
+        return urlopen(request, timeout=timeout)
+    except HTTPError:
+        raise
+    except (URLError, OSError) as primary:
+        try:
+            return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+        except HTTPError:
+            raise
+        except (URLError, OSError) as direct:
+            raise URLError(f'system: {primary}; direct: {direct}') from direct
+
+
+
 def normalize_version(value):
     match = VERSION_RE.fullmatch(str(value).strip())
     if not match:
@@ -114,7 +130,7 @@ def fetch_releases(timeout=12):
         },
     )
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with _open_with_direct_fallback(request, timeout) as response:
             data = json.load(response)
     except HTTPError as exc:
         if exc.code == 404:
@@ -146,7 +162,7 @@ def _safe_download_url(url):
 def _read_checksum(url, timeout=20):
     request = Request(_safe_download_url(url), headers={'User-Agent': USER_AGENT})
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with _open_with_direct_fallback(request, timeout) as response:
             text = response.read(32 * 1024).decode('utf-8', errors='replace')
     except (HTTPError, URLError, OSError) as exc:
         raise UpdateError(f'Не вдалося отримати контрольну суму: {exc}') from exc
