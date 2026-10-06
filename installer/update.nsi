@@ -52,5 +52,5 @@ valid:
  SetShellVarContext all
  CreateShortCut "$DESKTOP\WhisperDesk.lnk" "$INSTDIR\WhisperDesk.exe" "" "$INSTDIR\app\assets\icon.ico"
  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperDesk" "DisplayVersion" "${VERSION}"
- Exec '"$INSTDIR\WhisperDesk.exe"'
+ Exec '"$WINDIR\explorer.exe" "$INSTDIR\WhisperDesk.exe"'
 SectionEnd
