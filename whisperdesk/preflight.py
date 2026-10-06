@@ -149,7 +149,7 @@ def report_text(report):
         f'Аудіо до обробки: {_clock(report["seconds"])}',
     ]
     if report['models']:
-        lines.append('Моделі: ' + ', '.join(f'{key} × {count}' for key, count in report['models'].items()))
+        lines.append('Моделі: ' + ', '.join(f'{MODELS[key][0]} × {count}' for key, count in report['models'].items()))
     if report['devices']:
         names = {'cpu': 'CPU', 'auto': 'Авто', 'cuda': 'NVIDIA CUDA'}
         lines.append('Режими: ' + ', '.join(f'{names.get(key, key)} × {count}' for key, count in report['devices'].items()))
