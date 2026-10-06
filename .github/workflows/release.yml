@@ -63,7 +63,9 @@ jobs:
           $makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
           Push-Location "installer"
           & $makensis "launcher.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "Launcher build failed" }
           & $makensis "/DVERSION=$env:VERSION" "/DVERSION4=$env:VERSION4" "update.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "Updater build failed" }
           & $makensis "/DVERSION=$env:VERSION" "/DVERSION4=$env:VERSION4" "setup.nsi"
           if ($LASTEXITCODE -ne 0) { throw "Setup build failed" }
           Pop-Location
