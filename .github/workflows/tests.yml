@@ -50,12 +50,14 @@ jobs:
           choco install nsis -y --no-progress
           $env:Path += ";C:\Program Files (x86)\NSIS;C:\Program Files\NSIS"
           $makensis = (Get-Command makensis.exe -ErrorAction Stop).Source
-          & $makensis "installer/launcher.nsi"
+          Push-Location "installer"
+          & $makensis "launcher.nsi"
           if ($LASTEXITCODE -ne 0) { throw "Launcher build failed" }
-          & $makensis "/DVERSION=$env:VERSION" "/DVERSION4=$env:VERSION4" "installer/update.nsi"
+          & $makensis "/DVERSION=$env:VERSION" "/DVERSION4=$env:VERSION4" "update.nsi"
           if ($LASTEXITCODE -ne 0) { throw "Updater build failed" }
-          & $makensis "/DVERSION=$env:VERSION" "/DVERSION4=$env:VERSION4" "installer/setup.nsi"
+          & $makensis "/DVERSION=$env:VERSION" "/DVERSION4=$env:VERSION4" "setup.nsi"
           if ($LASTEXITCODE -ne 0) { throw "Setup build failed" }
+          Pop-Location
 
       - name: Verify build outputs
         shell: pwsh
