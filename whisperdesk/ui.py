@@ -20,6 +20,7 @@ from .core import (MODELS, Job, data_dir, parse_time, clock, validate_range,
 from .engine import model_ready, download_worker, transcribe_job
 from .queue_store import TaskQueue
 from .preflight import analyze_queue, report_text
+from .eta import record_sample
 from .updater import (auto_check_due, check_for_update, download_update,
                       launch_installer)
 from .theme import ACCENTS, stylesheet
@@ -80,6 +81,8 @@ class Window(QMainWindow):
         self.process = self.channel = self.cancel_event = None
         self.active_id = None
         self.operation = None
+        self.operation_started_at = None
+        self.operation_eta_sample = None
         self.running_queue = False
         self.cancel_deadline = None
         self.close_when_stopped = False
@@ -531,6 +534,20 @@ class Window(QMainWindow):
         self.channel = self.ctx.Queue(); self.cancel_event = self.ctx.Event()
         self.process = self.ctx.Process(target=target, args=(*args, self.channel, self.cancel_event), daemon=True)
         self.operation = operation; self.finished_message = None; self.failed = False
+        self.operation_started_at = time.monotonic()
+        self.operation_eta_sample = None
+        if operation == 'transcribe' and args:
+            job = args[0]
+            resume = job.resume if job.resume is not None else job.start
+            self.operation_eta_sample = {
+                'task': {
+                    'model': job.model,
+                    'device': job.device,
+                    'profile': job.profile,
+                    'threads': job.threads,
+                },
+                'audio_seconds': max(0.0, job.end - resume),
+            }
         self.cancel_deadline = None; self.forced_stop = False
         try:
             self.process.start()
@@ -595,6 +612,17 @@ class Window(QMainWindow):
                 state = recovery(task['session']) if Path(task['session']).exists() else None
                 if state and state['complete']:
                     task['status'] = 'done'; task['position'] = task['end']
+                    if (not failed and not self.cancel_deadline and self.operation_eta_sample
+                            and self.operation_started_at is not None):
+                        try:
+                            record_sample(
+                                self.root,
+                                self.operation_eta_sample['task'],
+                                self.operation_eta_sample['audio_seconds'],
+                                time.monotonic() - self.operation_started_at,
+                            )
+                        except (OSError, ValueError, TypeError):
+                            pass
                 else:
                     task['status'] = 'error' if failed else 'interrupted'
                     if state and state['position'] is not None: task['position'] = state['position']
@@ -616,6 +644,8 @@ class Window(QMainWindow):
             task['error'] = ''
             message = 'Авто: повторний запуск на CPU з останнього автозбереження…'
         self.channel.close(); self.process.close(); self.process = None
+        self.operation_started_at = None
+        self.operation_eta_sample = None
         self.active_id = None
         self.start_button.setEnabled(True); self.stop_file.setEnabled(False); self.stop_queue.setEnabled(False)
         self.settings_button.setEnabled(True)
