@@ -226,9 +226,13 @@ def launch_installer(path):
     path = Path(path).resolve()
     if not path.is_file() or path.suffix.lower() != '.exe':
         raise UpdateError('Файл оновлення не знайдено.')
-    # NSIS carries the elevation manifest. Launch only after the application lock
-    # is released by ui.main().
-    subprocess.Popen([str(path)], close_fds=True)
+    # NSIS carries a requireAdministrator manifest. On Windows it must be opened
+    # through ShellExecute so the OS can show the UAC consent dialog; CreateProcess
+    # would fail with ERROR_ELEVATION_REQUIRED instead of prompting.
+    if os.name == 'nt':
+        os.startfile(str(path))
+    else:
+        subprocess.Popen([str(path)], close_fds=True)
 
 
 def auto_check_due(last_check, now):
