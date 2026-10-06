@@ -64,6 +64,8 @@ class Window(QMainWindow):
         except (OSError, ValueError):
             pass
         self.settings['accent'] = max(0, min(7, int(self.settings.get('accent', 0))))
+        if self.settings.get('update_channel') not in ('stable', 'test'):
+            self.settings['update_channel'] = 'stable'
         self.queue_warning = None
         try:
             self.tasks = TaskQueue(self.root)
@@ -246,8 +248,22 @@ class Window(QMainWindow):
         atomic_text(self.root / 'settings.json', json.dumps(self.settings, ensure_ascii=False))
 
     def startup(self):
+        marker_path = self.root / 'update-result.json'
+        marker = None
+        try:
+            if marker_path.exists():
+                marker = json.loads(marker_path.read_text(encoding='utf-8'))
+                marker_path.unlink()
+        except (OSError, ValueError):
+            marker = None
         previous = self.settings.get('last_seen_version')
-        if previous and previous != __version__:
+        if marker and marker.get('to') == __version__:
+            old = marker.get('from')
+            text = f'WhisperDesk оновлено до {__version__}.'
+            if old:
+                text += f' Попередня версія: {old}.'
+            QTimer.singleShot(800, lambda message=text: self.info(message))
+        elif previous and previous != __version__:
             QTimer.singleShot(800, lambda: self.info(f'WhisperDesk оновлено до {__version__}.'))
         if previous != __version__:
             self.settings['last_seen_version'] = __version__
