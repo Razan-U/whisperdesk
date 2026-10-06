@@ -42,7 +42,7 @@ valid:
  SetOutPath "$PLUGINSDIR\update"
  File "update_app.py"
  SetOutPath "$PLUGINSDIR\update\app"
- File /r "..\..\windows-build\payload/app/*.*"
+ File /r "..\..\windows-build\payload\app\*.*"
  SetOutPath "$PLUGINSDIR"
  ExecWait '"$INSTDIR\runtime\python.exe" "$PLUGINSDIR\update\update_app.py" "$INSTDIR" "$PLUGINSDIR\update\app"' $0
  ${If} $0 != 0
