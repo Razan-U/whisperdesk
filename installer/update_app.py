@@ -1,5 +1,6 @@
 """Replace WhisperDesk application code atomically while preserving user data."""
 from pathlib import Path
+import json
 import os
 import re
 import shutil
@@ -63,13 +64,15 @@ def replace_app(install, source, validate=True):
         raise RuntimeError('Автоматичне оновлення підтримується починаючи з WhisperDesk 0.2.')
 
     lock = None
+    data_root = None
     if validate:
         # Imports from the installed app resolve the actual data path, including
         # environment overrides and UTF-16 installer configuration.
         sys.path.insert(0, str(app))
         from whisperdesk.core import data_dir
         from PySide6.QtCore import QLockFile
-        lock = QLockFile(str(data_dir() / 'app.lock'))
+        data_root = data_dir()
+        lock = QLockFile(str(data_root / 'app.lock'))
         lock.setStaleLockTime(0)
         if not lock.tryLock(100):
             raise RuntimeError('Спочатку закрийте WhisperDesk і повторіть оновлення.')
@@ -110,6 +113,15 @@ def replace_app(install, source, validate=True):
             swapped = True
             if validate:
                 smoke_test(install)
+                marker = {
+                    'from': current,
+                    'to': target,
+                    'updated_at': time.time(),
+                    'backup': str(backup),
+                }
+                (data_root / 'update-result.json').write_text(
+                    json.dumps(marker, ensure_ascii=False), encoding='utf-8'
+                )
         except BaseException:
             if app.exists():
                 shutil.rmtree(app)
