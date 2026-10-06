@@ -13,6 +13,7 @@ def release(version, prerelease=False, draft=False, with_hash=True):
         'name': filename,
         'browser_download_url': f'https://github.com/Razan-U/whisperdesk/releases/download/v{version}/{filename}',
         'size': 123,
+        'url': f'https://api.github.com/repos/Razan-U/whisperdesk/releases/assets/{version}',
     }]
     if with_hash:
         assets.append({
@@ -159,3 +160,33 @@ def test_download_rejects_non_github_host(tmp_path):
     }
     with pytest.raises(updater.UpdateError, match='GitHub'):
         updater.download_update(info, tmp_path)
+
+
+def test_download_falls_back_to_api_asset_after_release_dns_error(tmp_path, monkeypatch):
+    from urllib.error import URLError
+
+    payload = b'fallback updater bytes'
+    digest = hashlib.sha256(payload).hexdigest()
+    filename = 'WhisperDesk-Update-0.3.2-beta.2.exe'
+    info = {
+        'asset_name': filename,
+        'download_url': 'https://github.com/Razan-U/whisperdesk/releases/download/v0.3.2-beta.2/' + filename,
+        'api_download_url': 'https://api.github.com/repos/Razan-U/whisperdesk/releases/assets/12345',
+        'checksum_url': None,
+        'sha256': digest,
+        'size': len(payload),
+    }
+    calls = []
+
+    def fake_open(request, timeout=0):
+        calls.append(request.full_url)
+        if request.full_url.startswith('https://github.com/'):
+            raise URLError(OSError(11001, 'getaddrinfo failed'))
+        return Response(payload, {'Content-Length': str(len(payload))})
+
+    monkeypatch.setattr(updater, 'urlopen', fake_open)
+    result = updater.download_update(info, tmp_path)
+
+    assert result.read_bytes() == payload
+    assert calls[0].startswith('https://github.com/')
+    assert calls[1].startswith('https://api.github.com/')
