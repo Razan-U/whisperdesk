@@ -17,6 +17,7 @@ from .core import (MODELS, Job, data_dir, parse_time, clock, validate_range,
                    atomic_text, transcript_text, load_session, recovery)
 from .engine import model_ready, download_worker, transcribe_job
 from .queue_store import TaskQueue
+from .preflight import analyze_queue, report_text
 from .theme import ACCENTS, stylesheet
 
 ASSETS = Path(__file__).resolve().parent.parent / 'assets'
@@ -402,11 +403,41 @@ class Window(QMainWindow):
                 for w in (self.language, self.model, self.entire): w.setEnabled(True)
                 self.load_fields(self.settings)
 
+    def confirm_preflight(self):
+        report = analyze_queue(self.tasks.tasks, self.model_folder, self.root)
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Перевірка перед запуском')
+        dlg.resize(640, 460)
+        layout = QVBoxLayout(dlg)
+        title = 'Потрібна увага' if report['blockers'] else 'Готово до запуску'
+        subtitle = ('Виправте критичні проблеми перед стартом.'
+                    if report['blockers'] else
+                    'Перевірте параметри. Транскрипція почнеться лише після підтвердження.')
+        layout.addWidget(label(title, 'heading'))
+        hint = label(subtitle, 'muted'); hint.setWordWrap(True)
+        layout.addWidget(hint)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        details.setPlainText(report_text(report))
+        layout.addWidget(details, 1)
+        buttons = QDialogButtonBox()
+        if report['blockers']:
+            close_button = buttons.addButton('Повернутися до налаштувань', QDialogButtonBox.ButtonRole.RejectRole)
+            close_button.clicked.connect(dlg.reject)
+        else:
+            back_button = buttons.addButton('Назад', QDialogButtonBox.ButtonRole.RejectRole)
+            start_button = buttons.addButton('▶  Почати', QDialogButtonBox.ButtonRole.AcceptRole)
+            back_button.clicked.connect(dlg.reject)
+            start_button.clicked.connect(dlg.accept)
+        layout.addWidget(buttons)
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
     def start_queue(self):
         if self.process: return
         if not self.tasks.tasks: self.pick_files()
         if not self.tasks.tasks: return
         if not self.apply_current(): return
+        if not self.confirm_preflight(): return
         for task in self.tasks.tasks:
             if task['status'] in ('interrupted', 'error'):
                 task['status'] = 'pending'; task['error'] = ''
