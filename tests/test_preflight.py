@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from whisperdesk.preflight import analyze_queue, report_text
+from whisperdesk.eta import estimate_task
 from whisperdesk.core import fingerprint
 
 
@@ -112,3 +113,32 @@ def test_preflight_blocks_changed_source_for_resume(tmp_path):
         ready_checker=lambda path: True,
     )
     assert any('аудіофайл змінився' in item for item in report['blockers'])
+
+
+def test_eta_respects_model_and_device():
+    base_cpu = estimate_task({'model': 'base', 'device': 'cpu', 'profile': 'eco', 'threads': 4}, 600)
+    large_cpu = estimate_task({'model': 'large-v3', 'device': 'cpu', 'profile': 'eco', 'threads': 4}, 600)
+    large_cuda = estimate_task({'model': 'large-v3', 'device': 'cuda', 'profile': 'eco', 'threads': 4}, 600)
+    auto = estimate_task({'model': 'large-v3', 'device': 'auto', 'profile': 'eco', 'threads': 4}, 600)
+    assert base_cpu[1] < large_cpu[1]
+    assert large_cuda[1] < large_cpu[1]
+    assert auto[0] <= large_cuda[0]
+    assert auto[1] >= large_cpu[1]
+    assert auto[2] == 'низька'
+
+
+def test_preflight_eta_uses_remaining_resume_time(tmp_path):
+    (tmp_path / 'sessions').mkdir()
+    source = tmp_path / 'audio.wav'
+    source.write_bytes(b'audio')
+    report = analyze_queue(
+        [task(tmp_path, source, duration=600, end=600, position=300, status='interrupted')],
+        tmp_path / 'models',
+        tmp_path,
+        ready_checker=lambda path: True,
+    )
+    # No session file: queue position still represents the remaining half.
+    assert report['seconds'] == 300
+    assert report['eta_min_seconds'] > 0
+    assert report['eta_max_seconds'] > report['eta_min_seconds']
+    assert 'Орієнтовний час обробки:' in report_text(report)

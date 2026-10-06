@@ -6,6 +6,7 @@ import shutil
 
 from .core import MODELS, validate_range, recovery, fingerprint
 from .engine import model_ready
+from .eta import estimate_task, format_eta
 
 MODEL_BYTES = {
     'base': 150 * 1024**2,
@@ -55,12 +56,16 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         'models': Counter(),
         'devices': Counter(),
         'free_bytes': None,
+        'eta_min_seconds': 0.0,
+        'eta_max_seconds': 0.0,
+        'eta_confidence': 'середня',
     }
     if not candidates:
         report['blockers'].append('У черзі немає файлів, які потрібно запускати.')
         return report
 
     missing = set()
+    eta_confidences = []
     for task in candidates:
         source = Path(task.get('source', ''))
         name = source.name or 'Невідомий файл'
@@ -72,8 +77,9 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
             end = float(task.get('end', 0))
             duration = float(task.get('duration', 0))
             validate_range(start, end, duration)
-            report['seconds'] += end - start
+            resume_position = max(start, min(float(task.get('position', start) or start), end))
         except (TypeError, ValueError) as exc:
+            resume_position = None
             report['blockers'].append(f'{name}: некоректний діапазон — {exc}')
 
         model = task.get('model')
@@ -106,6 +112,8 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
                         f'{name}: збережений сеанс не містить даних для безпечного продовження.'
                     )
                 elif header:
+                    if saved.get('position') is not None and resume_position is not None:
+                        resume_position = max(start, min(float(saved['position']), end))
                     if source.is_file() and header.get('fingerprint') != fingerprint(source):
                         report['blockers'].append(
                             f'{name}: аудіофайл змінився після створення сеансу. '
@@ -122,6 +130,19 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
                         )
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 report['blockers'].append(f'{name}: не вдалося перевірити збережений сеанс — {exc}')
+
+        if resume_position is not None:
+            remaining = max(0.0, end - resume_position)
+            report['seconds'] += remaining
+            estimate = estimate_task(task, remaining)
+            if estimate:
+                low, high, confidence = estimate
+                report['eta_min_seconds'] += low
+                report['eta_max_seconds'] += high
+                eta_confidences.append(confidence)
+
+    if 'низька' in eta_confidences:
+        report['eta_confidence'] = 'низька'
 
     report['missing_models'] = sorted(missing)
     if missing:
@@ -161,9 +182,14 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
             )
 
     if report['devices'].get('auto', 0):
-        report['notes'].append('Режим «Авто»: помилка NVIDIA запускає один безпечний повтор на CPU.')
+        report['notes'].append(
+            'Режим «Авто»: помилка NVIDIA запускає один безпечний повтор на CPU. '
+            'Тому діапазон ETA ширший до точного аналізу заліза.'
+        )
     if report['devices'].get('cuda', 0):
         report['notes'].append('Режим NVIDIA CUDA: фактичне GPU-обчислення буде перевірено перед транскрипцією.')
+    if report['missing_models']:
+        report['notes'].append('ETA не включає час завантаження відсутніх моделей або NVIDIA-компонентів.')
 
     return report
 
@@ -174,6 +200,12 @@ def report_text(report):
         f'Файлів до запуску: {report["count"]}',
         f'Аудіо до обробки: {_clock(report["seconds"])}',
     ]
+    if report.get('eta_max_seconds', 0) > 0:
+        lines.append(
+            f'Орієнтовний час обробки: {format_eta(report["eta_min_seconds"])} – '
+            f'{format_eta(report["eta_max_seconds"])} '
+            f'(точність: {report.get("eta_confidence", "середня")})'
+        )
     if report['models']:
         lines.append('Моделі: ' + ', '.join(f'{MODELS[key][0]} × {count}' for key, count in report['models'].items()))
     if report['devices']:
