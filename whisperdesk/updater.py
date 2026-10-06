@@ -234,13 +234,13 @@ def download_update(info, destination, progress=None, timeout=30):
 
         if expected_size and received != expected_size:
             part.unlink(missing_ok=True)
-            errors.append(f'{kind}: отримано {received} із {expected_size} байтів')
-            continue
+            raise UpdateError(
+                f'Пакет завантажився не повністю: {received} із {expected_size} байтів.'
+            )
         actual = digest.hexdigest()
         if actual != expected:
             part.unlink(missing_ok=True)
-            errors.append(f'{kind}: SHA-256 не збігається')
-            continue
+            raise UpdateError('SHA-256 пакета не збігається. Оновлення не буде запущено.')
 
         os.replace(part, target)
         return target
