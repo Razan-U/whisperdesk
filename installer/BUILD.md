@@ -31,9 +31,11 @@ From the parent directory of the source folder `WhisperDesk`:
 6. Install NSIS from https://nsis.sourceforge.io/ and compile:
 
    ```text
-   makensis WhisperDesk/installer/launcher.nsi
-   makensis /DVERSION=0.3.1 /DVERSION4=0.3.1.0 WhisperDesk/installer/update.nsi
-   makensis /DVERSION=0.3.1 /DVERSION4=0.3.1.0 WhisperDesk/installer/setup.nsi
+   cd WhisperDesk/installer
+   makensis launcher.nsi
+   makensis /DVERSION=0.3.1 /DVERSION4=0.3.1.0 update.nsi
+   makensis /DVERSION=0.3.1 /DVERSION4=0.3.1.0 setup.nsi
+   cd ../..
    ```
 
    Outputs: `windows-build/payload/WhisperDesk.exe`, `WhisperDesk-Update-0.3.1.exe`, and `WhisperDesk-Setup-0.3.1.exe`.
