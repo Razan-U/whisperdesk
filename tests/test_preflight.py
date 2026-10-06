@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from whisperdesk.preflight import analyze_queue, report_text
-from whisperdesk.eta import estimate_task
+from whisperdesk.eta import estimate_task, load_calibration, record_sample
 from whisperdesk.core import fingerprint
 
 
@@ -142,3 +142,51 @@ def test_preflight_eta_uses_remaining_resume_time(tmp_path):
     assert report['eta_min_seconds'] > 0
     assert report['eta_max_seconds'] > report['eta_min_seconds']
     assert 'Орієнтовний час обробки:' in report_text(report)
+
+
+def test_first_run_turbo_cpu_range_covers_observed_slow_cpu():
+    # Real-world validation: 19:31 of audio took about 45 minutes on CPU.
+    settings = {'model': 'turbo', 'device': 'cpu', 'profile': 'eco', 'threads': 0}
+    low, high, confidence = estimate_task(settings, 19 * 60 + 31)
+    assert low < 45 * 60 < high
+    assert confidence == 'початкова'
+
+
+def test_eta_calibrates_from_completed_local_job(tmp_path):
+    settings = {'model': 'turbo', 'device': 'cpu', 'profile': 'eco', 'threads': 0}
+    audio = 19 * 60 + 31
+    elapsed = 45 * 60
+
+    baseline = estimate_task(settings, audio)
+    assert record_sample(tmp_path, settings, audio, elapsed)
+    calibration = load_calibration(tmp_path)
+    calibrated = estimate_task(settings, audio, calibration)
+
+    assert calibrated[0] < elapsed < calibrated[1]
+    assert calibrated[2] == 'локальна · 1 замір'
+    assert calibrated[1] - calibrated[0] < baseline[1] - baseline[0]
+
+
+def test_preflight_uses_saved_local_eta_calibration(tmp_path):
+    (tmp_path / 'sessions').mkdir()
+    source = tmp_path / 'audio.wav'
+    source.write_bytes(b'audio')
+    settings = task(
+        tmp_path,
+        source,
+        duration=19 * 60 + 31,
+        end=19 * 60 + 31,
+        model='turbo',
+        device='cpu',
+    )
+    assert record_sample(tmp_path, settings, 19 * 60 + 31, 45 * 60)
+
+    report = analyze_queue(
+        [settings],
+        tmp_path / 'models',
+        tmp_path,
+        ready_checker=lambda path: True,
+    )
+    assert report['eta_confidence'] == 'локальна · 1 замір'
+    assert report['eta_min_seconds'] < 45 * 60 < report['eta_max_seconds']
+    assert 'локальна · 1 замір' in report_text(report)
