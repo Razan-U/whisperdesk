@@ -1,18 +1,24 @@
 Unicode true
+!ifndef VERSION
+!define VERSION "0.3.1"
+!endif
+!ifndef VERSION4
+!define VERSION4 "0.3.1.0"
+!endif
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "LogicLib.nsh"
-Name "WhisperDesk 0.3"
-OutFile "../../WhisperDesk-Setup-0.3.0.exe"
+Name "WhisperDesk ${VERSION}"
+OutFile "../../WhisperDesk-Setup-${VERSION}.exe"
 InstallDir "D:\WhisperDesk"
 RequestExecutionLevel admin
 SetCompressor zlib
 Icon "../assets/icon.ico"
 UninstallIcon "../assets/icon.ico"
-VIProductVersion "0.3.0.0"
+VIProductVersion "${VERSION4}"
 VIAddVersionKey /LANG=1033 "ProductName" "WhisperDesk"
 VIAddVersionKey /LANG=1033 "FileDescription" "WhisperDesk installer"
-VIAddVersionKey /LANG=1033 "FileVersion" "0.3.0"
+VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Nazar Svyryd 2026"
 !define MUI_ABORTWARNING
 !define MUI_ICON "../assets/icon.ico"
@@ -66,7 +72,7 @@ existing_install:
   SetOutPath "$PLUGINSDIR\update"
   File "update_app.py"
   SetOutPath "$PLUGINSDIR\update\app"
-  File /r "../../windows-build/payload/app/*.*"
+  File /r "..\..\windows-build\payload\app\*.*"
   SetOutPath "$PLUGINSDIR"
   ExecWait '"$INSTDIR\runtime\python.exe" "$PLUGINSDIR\update\update_app.py" "$INSTDIR" "$PLUGINSDIR\update\app"' $0
   ${If} $0 != 0
@@ -76,7 +82,7 @@ existing_install:
   Goto shortcuts
 fresh_install:
   SetOutPath "$INSTDIR"
-  File /r "../../windows-build/payload/*.*"
+  File /r "..\..\windows-build\payload\*.*"
   ; Install Microsoft's official runtime automatically, with no component choices.
   ExecWait '"$INSTDIR\vc_redist.x64.exe" /install /quiet /norestart' $0
   ${If} $0 != 0
@@ -109,7 +115,7 @@ shortcuts:
   CreateShortCut "$SMPROGRAMS\WhisperDesk\WhisperDesk.lnk" "$INSTDIR\WhisperDesk.exe" "" "$INSTDIR\app\assets\icon.ico"
   WriteRegStr HKLM "Software\WhisperDesk" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperDesk" "DisplayName" "WhisperDesk"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperDesk" "DisplayVersion" "0.3.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperDesk" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperDesk" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperDesk" "DisplayIcon" "$INSTDIR\app\assets\icon.ico"
   WriteUninstaller "$INSTDIR\Uninstall.exe"

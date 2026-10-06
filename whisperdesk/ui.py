@@ -5,6 +5,7 @@ import multiprocessing as mp
 import os
 import queue
 import shutil
+import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl, QSize, QLockFile
@@ -13,10 +14,13 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QComboBox, QFileDialog, QLineEdit, QCheckBox,
     QProgressBar, QPlainTextEdit, QMessageBox, QFrame, QListWidget, QListWidgetItem,
     QSpinBox, QDialog, QFormLayout, QDialogButtonBox, QScrollArea)
+from . import __version__
 from .core import (MODELS, Job, data_dir, parse_time, clock, validate_range,
                    atomic_text, transcript_text, load_session, recovery)
 from .engine import model_ready, download_worker, transcribe_job
 from .queue_store import TaskQueue
+from .updater import (auto_check_due, check_for_update, download_update,
+                      launch_installer)
 from .theme import ACCENTS, stylesheet
 
 ASSETS = Path(__file__).resolve().parent.parent / 'assets'
@@ -54,12 +58,14 @@ class Window(QMainWindow):
         self.model_folder = self.root / 'models'
         self.sessions = self.root / 'sessions'
         self.sessions.mkdir(exist_ok=True)
-        self.settings = {**DEFAULTS, 'night': False, 'accent': 0}
+        self.settings = {**DEFAULTS, 'night': False, 'accent': 0, 'update_channel': 'stable'}
         try:
             self.settings.update(json.loads((self.root / 'settings.json').read_text(encoding='utf-8')))
         except (OSError, ValueError):
             pass
         self.settings['accent'] = max(0, min(7, int(self.settings.get('accent', 0))))
+        if self.settings.get('update_channel') not in ('stable', 'test'):
+            self.settings['update_channel'] = 'stable'
         self.queue_warning = None
         try:
             self.tasks = TaskQueue(self.root)
@@ -77,6 +83,13 @@ class Window(QMainWindow):
         self.cancel_deadline = None
         self.close_when_stopped = False
         self.forced_stop = False
+        self.update_events = queue.Queue()
+        self.update_thread = None
+        self.update_download_thread = None
+        self.available_update = None
+        self.downloaded_update = None
+        self.update_after_queue = False
+        self.pending_update_path = None
         self.rows = []
         self.cpu_fallback_ids = set()
         self.ctx = mp.get_context('spawn')
@@ -189,6 +202,8 @@ class Window(QMainWindow):
         control.addWidget(self.progress)
         self.runtime = label('Готово до роботи', 'muted')
         control.addWidget(self.runtime)
+        self.update_status = label('', 'muted'); self.update_status.setWordWrap(True); self.update_status.hide()
+        control.addWidget(self.update_status)
         row = QHBoxLayout()
         self.start_button = button('▶  Почати чергу', self.start_queue, True)
         self.stop_file = button('Зупинити файл', lambda: self.stop_job(False))
@@ -224,6 +239,7 @@ class Window(QMainWindow):
         self.timer.setInterval(100); self.timer.timeout.connect(self.poll); self.timer.start()
         if auto_start:
             QTimer.singleShot(500, self.startup)
+            QTimer.singleShot(1800, lambda: self.check_updates(manual=False))
 
     def info(self, message):
         QMessageBox.information(self, 'WhisperDesk', str(message))
@@ -232,6 +248,26 @@ class Window(QMainWindow):
         atomic_text(self.root / 'settings.json', json.dumps(self.settings, ensure_ascii=False))
 
     def startup(self):
+        marker_path = self.root / 'update-result.json'
+        marker = None
+        try:
+            if marker_path.exists():
+                marker = json.loads(marker_path.read_text(encoding='utf-8'))
+                marker_path.unlink()
+        except (OSError, ValueError):
+            marker = None
+        previous = self.settings.get('last_seen_version')
+        if marker and marker.get('to') == __version__:
+            old = marker.get('from')
+            text = f'WhisperDesk оновлено до {__version__}.'
+            if old:
+                text += f' Попередня версія: {old}.'
+            QTimer.singleShot(800, lambda message=text: self.info(message))
+        elif previous and previous != __version__:
+            QTimer.singleShot(800, lambda: self.info(f'WhisperDesk оновлено до {__version__}.'))
+        if previous != __version__:
+            self.settings['last_seen_version'] = __version__
+            self.save_settings()
         if self.queue_warning:
             self.info(self.queue_warning)
         incomplete = [t for t in self.tasks.tasks if t['status'] in ('interrupted', 'error')]
@@ -424,6 +460,8 @@ class Window(QMainWindow):
             counts = {key: sum(t['status'] == key for t in self.tasks.tasks) for key in ('done', 'error', 'interrupted')}
             self.status.setText(f"Чергу завершено · готово: {counts['done']} · помилок: {counts['error']} · перервано: {counts['interrupted']}. Подробиці — у вибраному файлі.")
             self.start_button.setEnabled(True)
+            if self.update_after_queue and self.downloaded_update:
+                QTimer.singleShot(500, lambda: self.install_downloaded_update())
             return
         self.active_id = task['id']
         if not model_ready(self.model_folder / task['model']):
@@ -503,6 +541,7 @@ class Window(QMainWindow):
                 self.failed = kind == 'error'
 
     def poll(self):
+        self.poll_updates()
         if self.process is None: return
         if not self.forced_stop: self.consume()
         if self.cancel_deadline and time.monotonic() > self.cancel_deadline and self.process.is_alive():
@@ -549,7 +588,10 @@ class Window(QMainWindow):
         self.status.setText(message)
         if self.close_when_stopped:
             self.close(); return
-        if self.running_queue: QTimer.singleShot(0, self.next_task)
+        if self.running_queue:
+            QTimer.singleShot(0, self.next_task)
+        elif self.update_after_queue and self.downloaded_update:
+            QTimer.singleShot(250, self.install_downloaded_update)
 
     def render(self, *_):
         self.text.setPlainText(transcript_text(self.rows, self.stamps.isChecked()))
@@ -645,8 +687,144 @@ class Window(QMainWindow):
                 self.update_help(); dlg.accept(); self.info('Наявні моделі перенесено.')
             except OSError as exc: self.info(exc)
         row.addWidget(button('Перенести моделі з 0.1', migrate)); layout.addLayout(row)
+        layout.addWidget(label('Оновлення', 'heading'))
+        update_row = QHBoxLayout()
+        update_row.addWidget(label(f'Версія {__version__}', 'muted'))
+        channel = QComboBox()
+        channel.addItem('Stable · лише стабільні', 'stable')
+        channel.addItem('Test · beta / RC / stable', 'test')
+        channel.setCurrentIndex(max(0, channel.findData(self.settings.get('update_channel', 'stable'))))
+        def save_channel():
+            self.settings['update_channel'] = channel.currentData()
+            self.save_settings()
+        channel.currentIndexChanged.connect(save_channel)
+        update_row.addWidget(channel, 1)
+        def manual_check():
+            save_channel(); dlg.accept(); self.check_updates(manual=True)
+        update_row.addWidget(button('Перевірити оновлення', manual_check))
+        layout.addLayout(update_row)
+        note = label('Stable отримує тільки звичайні GitHub Releases. Test також бачить prerelease (beta / RC).', 'muted')
+        note.setWordWrap(True); layout.addWidget(note)
         layout.addWidget(button('Закрити', dlg.accept))
         dlg.exec()
+
+    def check_updates(self, manual=False):
+        if self.update_thread and self.update_thread.is_alive():
+            if manual: self.info('Перевірка оновлень уже виконується.')
+            return
+        now = time.time()
+        if not manual and not auto_check_due(self.settings.get('last_update_check'), now):
+            return
+        channel = self.settings.get('update_channel', 'stable')
+        if manual:
+            self.update_status.setText('Перевірка оновлень…'); self.update_status.show()
+
+        def worker():
+            try:
+                info = check_for_update(__version__, channel)
+                self.update_events.put(('check_done', (manual, info, now)))
+            except Exception as exc:
+                self.update_events.put(('check_error', (manual, str(exc), now)))
+        self.update_thread = threading.Thread(target=worker, daemon=True)
+        self.update_thread.start()
+
+    def offer_update(self, info):
+        self.available_update = info
+        box = QMessageBox(self)
+        box.setWindowTitle('Доступне оновлення WhisperDesk')
+        channel = 'Test' if info.get('prerelease') else 'Stable'
+        box.setText(f'Доступна версія {info["version"]} · {channel}')
+        notes = (info.get('notes') or '').strip()
+        if len(notes) > 1600: notes = notes[:1600].rstrip() + '…'
+        box.setInformativeText(notes or 'Нова версія готова до встановлення.')
+        later = box.addButton('Пізніше', QMessageBox.ButtonRole.RejectRole)
+        if self.process or self.running_queue:
+            after = box.addButton('Оновити після завершення черги', QMessageBox.ButtonRole.AcceptRole)
+            box.setDefaultButton(after)
+            box.exec()
+            if box.clickedButton() is after:
+                self.start_update_download(info, after_queue=True)
+        else:
+            install = box.addButton('Оновити', QMessageBox.ButtonRole.AcceptRole)
+            box.setDefaultButton(install)
+            box.exec()
+            if box.clickedButton() is install:
+                self.start_update_download(info, after_queue=False)
+
+    def start_update_download(self, info, after_queue=False):
+        if self.update_download_thread and self.update_download_thread.is_alive():
+            self.update_after_queue = self.update_after_queue or after_queue
+            self.update_status.setText('Оновлення вже завантажується у фоні…'); self.update_status.show()
+            return
+        self.update_after_queue = bool(after_queue)
+        self.update_status.setText(f'Завантаження WhisperDesk {info["version"]}…'); self.update_status.show()
+
+        def progress(done, total):
+            self.update_events.put(('download_progress', (done, total, info['version'])))
+
+        def worker():
+            try:
+                path = download_update(info, self.root / 'updates', progress=progress)
+                self.update_events.put(('download_done', (str(path), info['version'])))
+            except Exception as exc:
+                self.update_events.put(('download_error', str(exc)))
+        self.update_download_thread = threading.Thread(target=worker, daemon=True)
+        self.update_download_thread.start()
+
+    def poll_updates(self):
+        for _ in range(20):
+            try:
+                kind, payload = self.update_events.get_nowait()
+            except queue.Empty:
+                break
+            if kind in ('check_done', 'check_error'):
+                manual, result, checked_at = payload
+                self.settings['last_update_check'] = checked_at
+                self.save_settings()
+                if kind == 'check_error':
+                    if manual:
+                        self.update_status.hide(); self.info(result)
+                    continue
+                self.update_status.hide()
+                if result:
+                    self.offer_update(result)
+                elif manual:
+                    self.info(f'У вас актуальна версія WhisperDesk {__version__}.')
+            elif kind == 'download_progress':
+                done, total, version = payload
+                if total:
+                    self.update_status.setText(f'Оновлення {version}: {done / total:.0%} завантажено')
+                else:
+                    self.update_status.setText(f'Оновлення {version}: завантажено {done / 1024**2:.1f} МБ')
+                self.update_status.show()
+            elif kind == 'download_done':
+                path, version = payload
+                self.downloaded_update = path
+                self.update_status.setText(f'WhisperDesk {version} завантажено й перевірено.')
+                self.update_status.show()
+                if self.update_after_queue and (self.process or self.running_queue):
+                    self.update_status.setText(
+                        f'WhisperDesk {version} готовий. Встановлення почнеться після завершення черги.'
+                    )
+                else:
+                    QTimer.singleShot(250, self.install_downloaded_update)
+            elif kind == 'download_error':
+                self.update_after_queue = False
+                self.downloaded_update = None
+                self.update_status.hide()
+                self.info(f'Оновлення не встановлюватиметься. {payload}')
+
+    def install_downloaded_update(self):
+        if not self.downloaded_update:
+            return
+        if self.process or self.running_queue:
+            self.update_after_queue = True
+            self.update_status.setText('Оновлення буде встановлено після завершення черги.')
+            self.update_status.show()
+            return
+        self.pending_update_path = self.downloaded_update
+        self.update_status.setText('Перезапуск для встановлення оновлення…'); self.update_status.show()
+        self.close()
 
     def closeEvent(self, event):
         if self.process:
@@ -666,4 +844,13 @@ def main():
         QMessageBox.information(None, 'WhisperDesk', 'Застосунок уже працює для цієї папки даних.')
         return 0
     window = Window(); window.show()
-    result = app.exec(); lock.unlock(); return result
+    result = app.exec()
+    pending_update = window.pending_update_path
+    lock.unlock()
+    if pending_update:
+        try:
+            launch_installer(pending_update)
+        except Exception as exc:
+            QMessageBox.information(None, 'WhisperDesk — оновлення', str(exc))
+            return 1
+    return result

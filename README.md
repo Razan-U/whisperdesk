@@ -4,8 +4,9 @@ Windows desktop app for local Whisper transcription: Ukrainian, English and
 mixed Ukrainian/English/Russian, sequential queue, selected audio ranges,
 checkpoint recovery, TXT export and retro light/dark themes.
 
-Version **0.3.0** adds a private NVIDIA component download, GPU preflight,
-automatic CPU retry after GPU failure, persistent diagnostics and a small updater.
+Version **0.3.1** adds GitHub Releases based automatic updates with Stable/Test
+channels, SHA-256 verification, background download, update-after-queue and rollback.
+The existing NVIDIA preflight and automatic CPU retry remain available.
 
 - [Інструкція українською](README_UA.md)
 - [Build Windows installers](installer/BUILD.md)
