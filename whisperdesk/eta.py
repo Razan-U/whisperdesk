@@ -1,37 +1,127 @@
-"""Heuristic processing-time estimates before local hardware/history calibration."""
-from .core import thread_count
+"""Adaptive preflight ETA estimates calibrated from local completed jobs."""
+from pathlib import Path
+import json
+import statistics
 
+from .core import atomic_text, thread_count
+
+CALIBRATION_VERSION = 1
+CALIBRATION_FILE = 'eta-calibration.json'
+MAX_SAMPLES = 12
+
+# Conservative first-run real-time factors: processing seconds / audio second.
+# They are intentionally wide until this PC has local completed-job samples.
 MODEL_RTF = {
-    'base': {'cpu': (0.18, 0.50), 'cuda': (0.03, 0.09)},
-    'small': {'cpu': (0.35, 0.90), 'cuda': (0.05, 0.14)},
-    'turbo': {'cpu': (0.45, 1.15), 'cuda': (0.06, 0.18)},
-    'large-v3': {'cpu': (0.80, 2.00), 'cuda': (0.10, 0.28)},
+    'base': {'cpu': (0.35, 1.20), 'cuda': (0.03, 0.10)},
+    'small': {'cpu': (0.65, 2.00), 'cuda': (0.05, 0.16)},
+    'turbo': {'cpu': (1.10, 3.20), 'cuda': (0.06, 0.20)},
+    'large-v3': {'cpu': (1.60, 4.50), 'cuda': (0.10, 0.32)},
 }
 OVERHEAD = {'cpu': (4.0, 12.0), 'cuda': (6.0, 18.0)}
 
 
 def _cpu_scale(task):
     threads = thread_count(task.get('profile', 'eco'), int(task.get('threads') or 0))
-    return max(0.65, min(2.0, (4.0 / max(1, threads)) ** 0.45))
+    # Extra threads help, but the old 0.65 floor was too optimistic on real CPUs.
+    return max(0.85, min(1.60, (4.0 / max(1, threads)) ** 0.30))
 
 
-def estimate_task(task, remaining_seconds):
+def calibration_key(task):
+    model = task.get('model', '')
+    device = task.get('device', 'cpu')
+    profile = task.get('profile', 'eco')
+    threads = thread_count(profile, int(task.get('threads') or 0))
+    return f'{model}|{device}|{profile}|{threads}'
+
+
+def load_calibration(root):
+    path = Path(root) / CALIBRATION_FILE
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if data.get('version') != CALIBRATION_VERSION or not isinstance(data.get('profiles'), dict):
+        return {}
+    return data['profiles']
+
+
+def record_sample(root, task, audio_seconds, elapsed_seconds):
+    """Persist one completed local speed sample. Never stores file names or transcript text."""
+    audio = float(audio_seconds)
+    elapsed = float(elapsed_seconds)
+    if audio < 60 or elapsed <= 0:
+        return False
+    rtf = elapsed / audio
+    if not 0.01 <= rtf <= 20:
+        return False
+
+    profiles = load_calibration(root)
+    key = calibration_key(task)
+    item = profiles.get(key) if isinstance(profiles.get(key), dict) else {}
+    samples = item.get('samples') if isinstance(item.get('samples'), list) else []
+    clean = []
+    for value in samples:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0.01 <= value <= 20:
+            clean.append(value)
+    clean.append(rtf)
+    clean = clean[-MAX_SAMPLES:]
+    profiles[key] = {'samples': clean}
+    payload = {'version': CALIBRATION_VERSION, 'profiles': profiles}
+    atomic_text(Path(root) / CALIBRATION_FILE, json.dumps(payload, ensure_ascii=False, indent=2))
+    return True
+
+
+def _calibrated_range(samples):
+    clean = sorted(float(x) for x in samples if 0.01 <= float(x) <= 20)
+    if not clean:
+        return None
+    center = statistics.median(clean)
+    count = len(clean)
+    if count == 1:
+        low, high = center * 0.75, center * 1.30
+        confidence = 'локальна · 1 замір'
+    elif count <= 3:
+        low, high = min(clean) * 0.85, max(clean) * 1.15
+        confidence = f'локальна · {count} заміри'
+    else:
+        low = min(center * 0.85, min(clean) * 0.95)
+        high = max(center * 1.15, max(clean) * 1.05)
+        confidence = f'локальна · {count} замірів'
+    return low, high, confidence
+
+
+def estimate_task(task, remaining_seconds, calibration=None):
     model, device = task.get('model'), task.get('device', 'cpu')
     if model not in MODEL_RTF or device not in ('cpu', 'auto', 'cuda'):
         return None
+
     remaining = max(0.0, float(remaining_seconds))
-    if device == 'cpu':
+    local = None
+    if calibration:
+        item = calibration.get(calibration_key(task))
+        if isinstance(item, dict):
+            local = _calibrated_range(item.get('samples') or [])
+
+    if local:
+        low, high, confidence = local
+        overhead = OVERHEAD['cuda'] if device == 'cuda' else OVERHEAD['cpu']
+    elif device == 'cpu':
         low, high = MODEL_RTF[model]['cpu']
         scale = _cpu_scale(task)
         low, high = low * scale, high * scale
-        overhead, confidence = OVERHEAD['cpu'], 'середня'
+        overhead, confidence = OVERHEAD['cpu'], 'початкова'
     elif device == 'cuda':
         low, high = MODEL_RTF[model]['cuda']
-        overhead, confidence = OVERHEAD['cuda'], 'середня'
+        overhead, confidence = OVERHEAD['cuda'], 'початкова'
     else:
         low = MODEL_RTF[model]['cuda'][0]
         high = MODEL_RTF[model]['cpu'][1] * _cpu_scale(task)
         overhead, confidence = (OVERHEAD['cpu'][0], OVERHEAD['cuda'][1]), 'низька'
+
     return remaining * low + overhead[0], remaining * high + overhead[1], confidence
 
 
