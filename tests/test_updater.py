@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 
 import pytest
 
@@ -136,3 +137,25 @@ def test_auto_check_interval():
     assert updater.auto_check_due(0, day + 1)
     assert not updater.auto_check_due(1000, 1000 + day - 1)
     assert updater.auto_check_due(1000, 1000 + day)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows ShellExecute behavior')
+def test_launch_installer_uses_windows_shell(tmp_path, monkeypatch):
+    path = tmp_path / 'WhisperDesk-Update-0.3.1.exe'
+    path.write_bytes(b'test')
+    opened = []
+    monkeypatch.setattr(updater.os, 'startfile', lambda value: opened.append(value))
+    updater.launch_installer(path)
+    assert opened == [str(path.resolve())]
+
+
+def test_download_rejects_non_github_host(tmp_path):
+    info = {
+        'asset_name': 'WhisperDesk-Update-0.3.1.exe',
+        'download_url': 'https://example.invalid/update.exe',
+        'checksum_url': None,
+        'sha256': '0' * 64,
+        'size': 10,
+    }
+    with pytest.raises(updater.UpdateError, match='GitHub'):
+        updater.download_update(info, tmp_path)
