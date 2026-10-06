@@ -2,7 +2,7 @@
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, ProxyHandler
 import hashlib
 import json
 import os
@@ -96,6 +96,7 @@ def select_release(releases, current_version, channel='stable'):
             'prerelease': is_prerelease,
             'asset_name': filename,
             'download_url': binary['browser_download_url'],
+            'api_download_url': binary.get('url') or '',
             'size': int(binary.get('size') or 0),
             'sha256': digest_sha,
             'checksum_url': checksum.get('browser_download_url') if checksum else None,
@@ -186,40 +187,70 @@ def download_update(info, destination, progress=None, timeout=30):
         return target
 
     part = target.with_name(target.name + '.part')
-    part.unlink(missing_ok=True)
-    digest = hashlib.sha256()
-    received = 0
     expected_size = int(info.get('size') or 0)
-    request = Request(_safe_download_url(info['download_url']), headers={'User-Agent': USER_AGENT})
-    try:
-        with urlopen(request, timeout=timeout) as response, part.open('wb') as output:
-            total = expected_size or int(response.headers.get('Content-Length') or 0)
-            while True:
-                block = response.read(1024 * 1024)
-                if not block:
-                    break
-                output.write(block)
-                digest.update(block)
-                received += len(block)
-                if progress:
-                    progress(received, total)
-            output.flush()
-            os.fsync(output.fileno())
-    except (HTTPError, URLError, OSError) as exc:
-        part.unlink(missing_ok=True)
-        raise UpdateError(f'Не вдалося завантажити оновлення: {exc}') from exc
 
-    if expected_size and received != expected_size:
+    candidates = []
+    primary = _safe_download_url(info['download_url'])
+    candidates.append(('release', primary, False))
+    api_url = info.get('api_download_url')
+    if api_url:
+        api_url = _safe_download_url(api_url)
+        if api_url != primary:
+            candidates.append(('api', api_url, False))
+    # A stale/broken Windows proxy can resolve api.github.com but fail on the
+    # release/CDN hop. Retrying directly keeps public GitHub updates usable.
+    candidates += [(kind + '-direct', url, True) for kind, url, _ in list(candidates)]
+
+    errors = []
+    for kind, url, direct in candidates:
         part.unlink(missing_ok=True)
-        raise UpdateError(
-            f'Пакет завантажився не повністю: {received} із {expected_size} байтів.'
-        )
-    actual = digest.hexdigest()
-    if actual != expected:
-        part.unlink(missing_ok=True)
-        raise UpdateError('SHA-256 пакета не збігається. Оновлення не буде запущено.')
-    os.replace(part, target)
-    return target
+        digest = hashlib.sha256()
+        received = 0
+        headers = {'User-Agent': USER_AGENT}
+        if kind.startswith('api'):
+            headers['Accept'] = 'application/octet-stream'
+            headers['X-GitHub-Api-Version'] = '2022-11-28'
+        request = Request(url, headers=headers)
+        opener = build_opener(ProxyHandler({})) if direct else None
+        try:
+            response_cm = opener.open(request, timeout=timeout) if opener else urlopen(request, timeout=timeout)
+            with response_cm as response, part.open('wb') as output:
+                total = expected_size or int(response.headers.get('Content-Length') or 0)
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    output.write(block)
+                    digest.update(block)
+                    received += len(block)
+                    if progress:
+                        progress(received, total)
+                output.flush()
+                os.fsync(output.fileno())
+        except (HTTPError, URLError, OSError) as exc:
+            part.unlink(missing_ok=True)
+            errors.append(f'{kind}: {exc}')
+            continue
+
+        if expected_size and received != expected_size:
+            part.unlink(missing_ok=True)
+            errors.append(f'{kind}: отримано {received} із {expected_size} байтів')
+            continue
+        actual = digest.hexdigest()
+        if actual != expected:
+            part.unlink(missing_ok=True)
+            errors.append(f'{kind}: SHA-256 не збігається')
+            continue
+
+        os.replace(part, target)
+        return target
+
+    detail = '; '.join(errors[-3:]) if errors else 'невідома мережева помилка'
+    raise UpdateError(
+        'Не вдалося завантажити оновлення через GitHub. '
+        'Перевірте інтернет/DNS або системний proxy та повторіть спробу. '
+        f'Деталі: {detail}'
+    )
 
 
 def launch_installer(path):
