@@ -588,7 +588,10 @@ class Window(QMainWindow):
         self.status.setText(message)
         if self.close_when_stopped:
             self.close(); return
-        if self.running_queue: QTimer.singleShot(0, self.next_task)
+        if self.running_queue:
+            QTimer.singleShot(0, self.next_task)
+        elif self.update_after_queue and self.downloaded_update:
+            QTimer.singleShot(250, self.install_downloaded_update)
 
     def render(self, *_):
         self.text.setPlainText(transcript_text(self.rows, self.stamps.isChecked()))
