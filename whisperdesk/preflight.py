@@ -4,7 +4,7 @@ from pathlib import Path
 import os
 import shutil
 
-from .core import MODELS, validate_range
+from .core import MODELS, validate_range, recovery, fingerprint
 from .engine import model_ready
 
 MODEL_BYTES = {
@@ -96,6 +96,32 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
             report['blockers'].append(f'{name}: папка автозбереження не існує: {parent}')
         elif not os.access(parent, os.W_OK):
             report['blockers'].append(f'{name}: немає прав запису в папку автозбереження: {parent}')
+
+        if session.is_file():
+            try:
+                saved = recovery(session)
+                header = saved.get('job')
+                if not header and task.get('status') in ('interrupted', 'error'):
+                    report['blockers'].append(
+                        f'{name}: збережений сеанс не містить даних для безпечного продовження.'
+                    )
+                elif header:
+                    if source.is_file() and header.get('fingerprint') != fingerprint(source):
+                        report['blockers'].append(
+                            f'{name}: аудіофайл змінився після створення сеансу. '
+                            'Додайте його як нове завдання.'
+                        )
+                    mismatches = [
+                        key for key in ('source', 'start', 'end', 'model', 'language')
+                        if key in header and header.get(key) != task.get(key)
+                    ]
+                    if mismatches:
+                        report['blockers'].append(
+                            f'{name}: параметри не відповідають збереженому сеансу '
+                            f'({", ".join(mismatches)}).'
+                        )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                report['blockers'].append(f'{name}: не вдалося перевірити збережений сеанс — {exc}')
 
     report['missing_models'] = sorted(missing)
     if missing:
