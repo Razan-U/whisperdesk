@@ -6,7 +6,7 @@ import shutil
 
 from .core import MODELS, validate_range, recovery, fingerprint
 from .engine import model_ready
-from .eta import estimate_task, format_eta
+from .eta import estimate_task, format_eta, load_calibration
 
 MODEL_BYTES = {
     'base': 150 * 1024**2,
@@ -58,7 +58,7 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         'free_bytes': None,
         'eta_min_seconds': 0.0,
         'eta_max_seconds': 0.0,
-        'eta_confidence': 'середня',
+        'eta_confidence': 'початкова',
     }
     if not candidates:
         report['blockers'].append('У черзі немає файлів, які потрібно запускати.')
@@ -66,6 +66,7 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
 
     missing = set()
     eta_confidences = []
+    calibration = load_calibration(root)
     for task in candidates:
         source = Path(task.get('source', ''))
         name = source.name or 'Невідомий файл'
@@ -134,7 +135,7 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         if resume_position is not None:
             remaining = max(0.0, end - resume_position)
             report['seconds'] += remaining
-            estimate = estimate_task(task, remaining)
+            estimate = estimate_task(task, remaining, calibration)
             if estimate:
                 low, high, confidence = estimate
                 report['eta_min_seconds'] += low
@@ -143,6 +144,10 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
 
     if 'низька' in eta_confidences:
         report['eta_confidence'] = 'низька'
+    elif any(value == 'початкова' for value in eta_confidences):
+        report['eta_confidence'] = 'початкова'
+    elif eta_confidences:
+        report['eta_confidence'] = eta_confidences[0] if len(set(eta_confidences)) == 1 else 'локальна'
 
     report['missing_models'] = sorted(missing)
     if missing:
@@ -190,6 +195,10 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         report['notes'].append('Режим NVIDIA CUDA: фактичне GPU-обчислення буде перевірено перед транскрипцією.')
     if report['missing_models']:
         report['notes'].append('ETA не включає час завантаження відсутніх моделей або NVIDIA-компонентів.')
+    if calibration:
+        report['notes'].append('ETA використовує локальні заміри швидкості цього ПК для сумісних налаштувань.')
+    else:
+        report['notes'].append('Після завершених транскрипцій ETA автоматично калібруватиметься під цей ПК.')
 
     return report
 
