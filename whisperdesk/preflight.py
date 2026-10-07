@@ -7,6 +7,7 @@ import shutil
 from .core import MODELS, validate_range, recovery, fingerprint
 from .engine import model_ready
 from .eta import estimate_task, format_eta, load_calibration
+from .hardware import analyze_hardware, hardware_summary, hardware_messages
 
 MODEL_BYTES = {
     'base': 150 * 1024**2,
@@ -59,6 +60,7 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         'eta_min_seconds': 0.0,
         'eta_max_seconds': 0.0,
         'eta_confidence': 'початкова',
+        'hardware': None,
     }
     if not candidates:
         report['blockers'].append('У черзі немає файлів, які потрібно запускати.')
@@ -67,6 +69,13 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
     missing = set()
     eta_confidences = []
     calibration = load_calibration(root)
+    try:
+        report['hardware'] = analyze_hardware()
+        hw_warnings, hw_notes = hardware_messages(report['hardware'])
+        report['warnings'].extend(hw_warnings)
+        report['notes'].extend(hw_notes)
+    except Exception as exc:
+        report['warnings'].append(f'Не вдалося проаналізувати залізо: {exc}')
     for task in candidates:
         source = Path(task.get('source', ''))
         name = source.name or 'Невідомий файл'
@@ -187,10 +196,15 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
             )
 
     if report['devices'].get('auto', 0):
-        report['notes'].append(
-            'Режим «Авто»: помилка NVIDIA запускає один безпечний повтор на CPU. '
-            'Тому діапазон ETA ширший до точного аналізу заліза.'
-        )
+        if report.get('hardware') and report['hardware'].get('cuda_available'):
+            report['notes'].append(
+                'Режим «Авто»: на цьому ПК виявлена доступна NVIDIA CUDA. '
+                'Застосунок спочатку спробує GPU, а при помилці безпечно перейде на CPU.'
+            )
+        else:
+            report['notes'].append(
+                'Режим «Авто»: доступна NVIDIA CUDA не виявлена, тому очікується робота на CPU.'
+            )
     if report['devices'].get('cuda', 0):
         report['notes'].append('Режим NVIDIA CUDA: фактичне GPU-обчислення буде перевірено перед транскрипцією.')
     if report['missing_models']:
@@ -215,6 +229,8 @@ def report_text(report):
             f'{format_eta(report["eta_max_seconds"])} '
             f'(точність: {report.get("eta_confidence", "середня")})'
         )
+    if report.get('hardware'):
+        lines.append('Залізо: ' + hardware_summary(report['hardware']))
     if report['models']:
         lines.append('Моделі: ' + ', '.join(f'{MODELS[key][0]} × {count}' for key, count in report['models'].items()))
     if report['devices']:
