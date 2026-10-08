@@ -761,7 +761,9 @@ class Window(QMainWindow):
         layout.addWidget(hardware_label)
         def refresh_hardware():
             try:
-                analyze_hardware.cache_clear()
+                clear_cache = getattr(analyze_hardware, 'cache_clear', None)
+                if clear_cache:
+                    clear_cache()
                 hardware_label.setText(hardware_summary(analyze_hardware()))
             except Exception as exc:
                 hardware_label.setText(f'Не вдалося отримати інформацію про залізо: {exc}')
