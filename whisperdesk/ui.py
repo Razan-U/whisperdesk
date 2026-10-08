@@ -21,6 +21,7 @@ from .engine import model_ready, download_worker, transcribe_job
 from .queue_store import TaskQueue
 from .preflight import analyze_queue, report_text
 from .eta import record_sample
+from .hardware import analyze_hardware, hardware_summary
 from .updater import (auto_check_due, check_for_update, download_update,
                       launch_installer)
 from .theme import ACCENTS, stylesheet
@@ -754,6 +755,19 @@ class Window(QMainWindow):
                 self.update_help(); dlg.accept(); self.info('Наявні моделі перенесено.')
             except OSError as exc: self.info(exc)
         row.addWidget(button('Перенести моделі з 0.1', migrate)); layout.addLayout(row)
+
+        layout.addWidget(label('Система / Залізо', 'heading'))
+        hardware_label = label('', 'muted'); hardware_label.setWordWrap(True)
+        layout.addWidget(hardware_label)
+        def refresh_hardware():
+            try:
+                analyze_hardware.cache_clear()
+                hardware_label.setText(hardware_summary(analyze_hardware()))
+            except Exception as exc:
+                hardware_label.setText(f'Не вдалося отримати інформацію про залізо: {exc}')
+        refresh_hardware()
+        layout.addWidget(button('Оновити інформацію про залізо', refresh_hardware))
+
         layout.addWidget(label('Оновлення', 'heading'))
         update_row = QHBoxLayout()
         update_row.addWidget(label(f'Версія {__version__}', 'muted'))
