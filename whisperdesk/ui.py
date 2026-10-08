@@ -709,7 +709,7 @@ class Window(QMainWindow):
         self.theme_button.setText('☀  Світла тема' if self.settings['night'] else '☾  Нічна тема')
 
     def open_settings(self):
-        dlg = QDialog(self); dlg.setWindowTitle('Налаштування'); dlg.resize(560, 360)
+        dlg = QDialog(self); dlg.setWindowTitle('Налаштування'); dlg.resize(620, 560)
         layout = QVBoxLayout(dlg)
         layout.addWidget(label('Акцентний колір', 'heading'))
         row = QHBoxLayout()

@@ -200,3 +200,33 @@ def test_preflight_cancel_preserves_queue_state(tmp_path, monkeypatch, audio):
     assert task['error'] == 'previous failure'
     w.close()
     app.processEvents()
+
+
+def test_settings_show_hardware_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QDialog, QLabel
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    monkeypatch.setattr(
+        ui_module,
+        'analyze_hardware',
+        lambda: {
+            'cpu_logical': 16,
+            'ram_bytes': 32 * 1024**3,
+            'gpus': [{'name': 'NVIDIA Test GPU', 'vram_bytes': 8 * 1024**3}],
+            'cuda_count': 1,
+            'cuda_available': True,
+        },
+    )
+    monkeypatch.setattr(QDialog, 'exec', lambda self: 0)
+
+    w.open_settings()
+
+    texts = [item.text() for item in w.findChildren(QLabel)]
+    assert any('CPU: 16 потоків' in text for text in texts)
+    assert any('NVIDIA Test GPU' in text for text in texts)
+    assert any('CUDA доступна' in text for text in texts)
+    w.close()
+    app.processEvents()
