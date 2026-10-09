@@ -24,7 +24,7 @@ from .history import HistoryStore
 from .crash_recovery import (load_marker, write_marker, update_checkpoint,
                              clear_marker, restore_missing_task)
 from .preflight import analyze_queue, report_text
-from .eta import record_sample
+from .eta import record_sample, migrate_calibration_from_history
 from .hardware import analyze_hardware, hardware_summary
 from .recommendation import apply_recommendation
 from .updater import (auto_check_due, check_for_update, download_update,
@@ -117,6 +117,11 @@ class Window(QMainWindow):
                 broken.rename(self.root / f'history-damaged-{time.time_ns()}.json')
             self.history = HistoryStore(self.root)
             self.history_warning = f'Не вдалося відкрити історію: {exc}. Пошкоджений файл збережено окремо.'
+
+        try:
+            migrate_calibration_from_history(self.root, self.history.records)
+        except (OSError, ValueError, TypeError):
+            pass
 
         self.process = self.channel = self.cancel_event = None
         self.active_id = None
