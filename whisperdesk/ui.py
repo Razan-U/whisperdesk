@@ -64,7 +64,8 @@ class Window(QMainWindow):
         self.model_folder = self.root / 'models'
         self.sessions = self.root / 'sessions'
         self.sessions.mkdir(exist_ok=True)
-        self.settings = {**DEFAULTS, 'night': False, 'accent': 0, 'update_channel': 'stable'}
+        self.settings = {**DEFAULTS, 'night': False, 'accent': 0, 'update_channel': 'stable',
+                         'history_auto_cleanup': True, 'history_retention_months': 3}
         try:
             self.settings.update(json.loads((self.root / 'settings.json').read_text(encoding='utf-8')))
         except (OSError, ValueError):
@@ -72,6 +73,13 @@ class Window(QMainWindow):
         self.settings['accent'] = max(0, min(7, int(self.settings.get('accent', 0))))
         if self.settings.get('update_channel') not in ('stable', 'test'):
             self.settings['update_channel'] = 'stable'
+        self.settings['history_auto_cleanup'] = bool(self.settings.get('history_auto_cleanup', True))
+        try:
+            self.settings['history_retention_months'] = max(
+                1, min(60, int(self.settings.get('history_retention_months', 3)))
+            )
+        except (TypeError, ValueError):
+            self.settings['history_retention_months'] = 3
         self.queue_warning = None
         try:
             self.tasks = TaskQueue(self.root)
@@ -294,6 +302,11 @@ class Window(QMainWindow):
             self.info(self.queue_warning)
         if self.history_warning:
             self.info(self.history_warning)
+        if self.settings.get('history_auto_cleanup', True):
+            try:
+                self.history.purge_older_than_months(self.settings.get('history_retention_months', 3))
+            except (OSError, ValueError, TypeError):
+                pass
         incomplete = [t for t in self.tasks.tasks if t['status'] in ('interrupted', 'error')]
         if incomplete:
             answer = QMessageBox.question(self, 'Відновлення', f'Є незавершені файли: {len(incomplete)}. Продовжити з останніх контрольних точок?')
@@ -889,12 +902,12 @@ class Window(QMainWindow):
     def open_history(self):
         dlg = QDialog(self)
         dlg.setWindowTitle('Історія транскрипцій')
-        dlg.resize(820, 560)
+        dlg.resize(860, 590)
         layout = QVBoxLayout(dlg)
         layout.addWidget(label('Історія транскрипцій', 'heading'))
         hint = label(
             'Історія зберігається локально й не залежить від поточної черги. '
-            'Видалення задачі з черги не видаляє цей запис.',
+            'Очищення історії видаляє лише записи — аудіо, TXT та сеанси не видаляються.',
             'muted',
         )
         hint.setWordWrap(True)
@@ -908,31 +921,53 @@ class Window(QMainWindow):
         body.addWidget(details, 1)
         layout.addLayout(body, 1)
 
-        records = self.history.newest()
-        for record in records:
-            source_name = Path(record.get('source') or '').name or 'Невідомий файл'
-            created = datetime.fromtimestamp(float(record.get('created_at') or 0)).strftime('%Y-%m-%d %H:%M')
-            status_text = STATUS.get(record.get('status'), record.get('status', 'Невідомо'))
-            item = QListWidgetItem(f'{source_name}\n{created} · {status_text}')
-            item.setData(Qt.ItemDataRole.UserRole, record.get('id'))
-            item.setToolTip(record.get('source') or '')
-            item.setSizeHint(QSize(330, 64))
-            items.addItem(item)
-
-        row = QHBoxLayout()
+        actions = QHBoxLayout()
         open_result_button = button('Відкрити результат', lambda: None)
         open_source_button = button('Відкрити оригінал', lambda: None)
         repeat_button = button('Повторити задачу', lambda: None, True)
-        row.addWidget(open_result_button)
-        row.addWidget(open_source_button)
-        row.addStretch()
-        row.addWidget(repeat_button)
-        layout.addLayout(row)
+        actions.addWidget(open_result_button)
+        actions.addWidget(open_source_button)
+        actions.addStretch()
+        actions.addWidget(repeat_button)
+        layout.addLayout(actions)
+
+        cleanup = QHBoxLayout()
+        delete_button = button('Видалити запис', lambda: None)
+        months = int(self.settings.get('history_retention_months', 3))
+        purge_button = button(f'Очистити старі (> {months} міс.)', lambda: None)
+        clear_button = button('Очистити всю історію', lambda: None)
+        cleanup.addWidget(delete_button)
+        cleanup.addWidget(purge_button)
+        cleanup.addStretch()
+        cleanup.addWidget(clear_button)
+        layout.addLayout(cleanup)
         layout.addWidget(button('Закрити', dlg.accept))
 
         def selected_record():
             item = items.currentItem()
             return self.history.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
+
+        def load_items(select_id=None):
+            items.blockSignals(True)
+            items.clear()
+            records = self.history.newest()
+            selected_row = 0
+            for index, record in enumerate(records):
+                source_name = Path(record.get('source') or '').name or 'Невідомий файл'
+                created = datetime.fromtimestamp(float(record.get('created_at') or 0)).strftime('%Y-%m-%d %H:%M')
+                status_text = STATUS.get(record.get('status'), record.get('status', 'Невідомо'))
+                item = QListWidgetItem(f'{source_name}\n{created} · {status_text}')
+                item.setData(Qt.ItemDataRole.UserRole, record.get('id'))
+                item.setToolTip(record.get('source') or '')
+                item.setSizeHint(QSize(330, 64))
+                items.addItem(item)
+                if select_id and record.get('id') == select_id:
+                    selected_row = index
+            items.blockSignals(False)
+            if records:
+                items.setCurrentRow(min(selected_row, len(records) - 1))
+            else:
+                refresh_details()
 
         def refresh_details():
             record = selected_record()
@@ -940,12 +975,15 @@ class Window(QMainWindow):
             open_result_button.setEnabled(enabled)
             open_source_button.setEnabled(enabled)
             repeat_button.setEnabled(enabled and not self.process)
+            delete_button.setEnabled(enabled)
+            purge_button.setEnabled(bool(self.history.records))
+            clear_button.setEnabled(bool(self.history.records))
             if not record:
                 details.setPlainText('Історія поки порожня.')
                 return
             model_name = MODELS.get(record.get('model'), (record.get('model', '—'), '', ''))[0]
             requested_names = {'cpu': 'CPU', 'auto': 'Авто', 'cuda': 'NVIDIA CUDA'}
-            actual_names = {'cpu': 'CPU', 'cuda': 'NVIDIA CUDA', 'auto': 'Авто'}
+            actual_names = {'cpu': 'CPU', 'cuda': 'NVIDIA CUDA', 'auto': 'Авто', '': 'Невідомо'}
             source = record.get('source') or '—'
             result_path = record.get('result_txt') or '—'
             lines = [
@@ -992,18 +1030,62 @@ class Window(QMainWindow):
             if record and self.repeat_history_record(record):
                 dlg.accept()
 
+        def delete_record():
+            record = selected_record()
+            if not record:
+                return
+            name = Path(record.get('source') or '').name or 'цей запис'
+            answer = QMessageBox.question(
+                dlg,
+                'Видалити запис з історії?',
+                f'Видалити з історії «{name}»?\n\nАудіо, TXT і файл сеансу залишаться на диску.',
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.history.delete(record.get('id'))
+                load_items()
+
+        def purge_old():
+            months = int(self.settings.get('history_retention_months', 3))
+            answer = QMessageBox.question(
+                dlg,
+                'Очистити старі записи?',
+                f'Видалити з історії записи старші {months} міс.?\n\n'
+                'Аудіо, TXT і файли сеансів залишаться на диску.',
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                count = self.history.purge_older_than_months(months)
+                load_items()
+                self.status.setText(f'З історії видалено старих записів: {count}.')
+
+        def clear_history():
+            if not self.history.records:
+                return
+            answer = QMessageBox.question(
+                dlg,
+                'Очистити всю історію?',
+                'Видалити всі записи історії?\n\n'
+                'Аудіо, TXT і файли сеансів залишаться на диску.',
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                count = self.history.clear()
+                load_items()
+                self.status.setText(f'Історію очищено · видалено записів: {count}.')
+
         open_result_button.clicked.disconnect()
         open_result_button.clicked.connect(open_result)
         open_source_button.clicked.disconnect()
         open_source_button.clicked.connect(open_source)
         repeat_button.clicked.disconnect()
         repeat_button.clicked.connect(repeat)
+        delete_button.clicked.disconnect()
+        delete_button.clicked.connect(delete_record)
+        purge_button.clicked.disconnect()
+        purge_button.clicked.connect(purge_old)
+        clear_button.clicked.disconnect()
+        clear_button.clicked.connect(clear_history)
         items.currentRowChanged.connect(lambda *_: refresh_details())
 
-        if records:
-            items.setCurrentRow(0)
-        else:
-            refresh_details()
+        load_items()
         dlg.exec()
 
     def restore_session(self):
@@ -1095,6 +1177,37 @@ class Window(QMainWindow):
                 hardware_label.setText(f'Не вдалося отримати інформацію про залізо: {exc}')
         refresh_hardware()
         layout.addWidget(button('Оновити інформацію про залізо', refresh_hardware))
+
+        layout.addWidget(label('Історія', 'heading'))
+        history_row = QHBoxLayout()
+        history_auto = QCheckBox('Автоматично очищати старі записи')
+        history_auto.setChecked(bool(self.settings.get('history_auto_cleanup', True)))
+        history_months = QSpinBox()
+        history_months.setRange(1, 60)
+        history_months.setSuffix(' міс.')
+        history_months.setValue(int(self.settings.get('history_retention_months', 3)))
+        history_months.setEnabled(history_auto.isChecked())
+        history_row.addWidget(history_auto, 1)
+        history_row.addWidget(label('Старші за', 'muted'))
+        history_row.addWidget(history_months)
+        layout.addLayout(history_row)
+
+        history_note = label(
+            'За замовчуванням — 3 місяці. Очищаються лише записи історії; '
+            'аудіофайли, TXT і сеанси не видаляються.',
+            'muted',
+        )
+        history_note.setWordWrap(True)
+        layout.addWidget(history_note)
+
+        def save_history_policy():
+            self.settings['history_auto_cleanup'] = history_auto.isChecked()
+            self.settings['history_retention_months'] = history_months.value()
+            history_months.setEnabled(history_auto.isChecked())
+            self.save_settings()
+
+        history_auto.toggled.connect(save_history_policy)
+        history_months.valueChanged.connect(save_history_policy)
 
         layout.addWidget(label('Оновлення', 'heading'))
         update_row = QHBoxLayout()
