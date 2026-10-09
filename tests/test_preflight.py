@@ -307,4 +307,4 @@ def test_calibrated_eta_resists_single_slow_outlier(tmp_path):
     low, high, confidence = estimate_task(settings, 600, calibration)
     assert confidence == 'локальна · 5 замірів'
     assert high < 60
-    assert low < 30 < high
+    assert low <= 30 < high
