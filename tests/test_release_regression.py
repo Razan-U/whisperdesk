@@ -3,6 +3,10 @@ from pathlib import Path
 from types import SimpleNamespace
 import queue
 import time
+import wave
+
+import numpy as np
+import pytest
 
 from whisperdesk.core import fingerprint, write_record
 from whisperdesk.history import HistoryStore
@@ -10,6 +14,19 @@ from whisperdesk.preflight import analyze_queue
 from whisperdesk.queue_store import TaskQueue
 from whisperdesk.ui import DEFAULTS
 from whisperdesk import updater
+
+
+@pytest.fixture
+def regression_audio(tmp_path):
+    path = tmp_path / 'regression.wav'
+    rate = 16000
+    samples = np.zeros(rate * 12, dtype='<i2')
+    with wave.open(str(path), 'wb') as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(rate)
+        stream.writeframes(samples.tobytes())
+    return path
 
 
 def _write_resumable_session(task, position, rows=None):
@@ -95,7 +112,7 @@ def test_release_regression_history_cleanup_never_deletes_user_files(tmp_path):
     assert result.read_text(encoding='utf-8') == 'transcript'
 
 
-def test_release_regression_pause_finalization_does_not_create_history(tmp_path, monkeypatch, audio):
+def test_release_regression_pause_finalization_does_not_create_history(tmp_path, monkeypatch, regression_audio):
     monkeypatch.setenv('WHISPERDESK_DATA', str(tmp_path))
     from PySide6.QtWidgets import QApplication
     from whisperdesk.ui import Window
@@ -103,7 +120,7 @@ def test_release_regression_pause_finalization_does_not_create_history(tmp_path,
     app = QApplication.instance() or QApplication([])
     w = Window(auto_start=False)
     w.timer.stop()
-    w.add_files([str(audio)])
+    w.add_files([str(regression_audio)])
     task = w.selected()
     task['status'] = 'running'
     task['position'] = 0.0
