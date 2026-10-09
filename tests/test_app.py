@@ -230,3 +230,41 @@ def test_settings_show_hardware_summary(tmp_path, monkeypatch):
     assert any('CUDA доступна' in text for text in texts)
     w.close()
     app.processEvents()
+
+
+
+def test_recommendation_dialog_reject_keeps_current_choice(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    task = w.selected()
+    assert task['model'] == 'base'
+    assert task['device'] == 'cpu'
+
+    seen = {}
+    def fake_exec(dialog):
+        seen['buttons'] = [b.text() for b in dialog.findChildren(QPushButton)]
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, 'exec', fake_exec)
+    applied = w.show_recommendation(
+        {
+            'recommendation': {
+                'model': 'turbo',
+                'device': 'auto',
+                'reason': 'Тестова рекомендація.',
+            }
+        }
+    )
+
+    assert applied is False
+    assert 'Відхилити' in seen['buttons']
+    assert '✓  Застосувати' in seen['buttons']
+    assert task['model'] == 'base'
+    assert task['device'] == 'cpu'
+    w.close()
+    app.processEvents()
