@@ -268,3 +268,67 @@ def test_recommendation_dialog_reject_keeps_current_choice(tmp_path, monkeypatch
     assert task['device'] == 'cpu'
     w.close()
     app.processEvents()
+
+
+
+def test_repeat_history_record_recreates_task_with_same_settings(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+
+    record = {
+        'source': str(audio),
+        'duration': 55.0,
+        'start': 5.0,
+        'end': 25.0,
+        'language': 'mixed',
+        'model': 'small',
+        'requested_device': 'auto',
+        'profile': 'fast',
+        'threads': 3,
+    }
+
+    assert w.repeat_history_record(record) is True
+    task = w.tasks.tasks[-1]
+    assert task['source'] == str(audio.resolve())
+    assert task['start'] == 5.0
+    assert task['end'] == 25.0
+    assert task['language'] == 'mixed'
+    assert task['model'] == 'small'
+    assert task['device'] == 'auto'
+    assert task['profile'] == 'fast'
+    assert task['threads'] == 3
+    assert task['status'] == 'pending'
+    w.close()
+    app.processEvents()
+
+
+def test_repeat_history_full_file_tracks_new_duration(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+
+    record = {
+        'source': str(audio),
+        'duration': 55.0,
+        'start': 0.0,
+        'end': 55.0,
+        'language': 'uk',
+        'model': 'base',
+        'requested_device': 'cpu',
+        'profile': 'eco',
+        'threads': 0,
+    }
+
+    assert w.repeat_history_record(record) is True
+    task = w.tasks.tasks[-1]
+    assert task['start'] == 0.0
+    assert task['end'] == task['duration'] == 55
+    w.close()
+    app.processEvents()
