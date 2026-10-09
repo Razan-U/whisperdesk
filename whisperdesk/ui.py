@@ -21,6 +21,8 @@ from .core import (MODELS, Job, data_dir, parse_time, clock, validate_range,
 from .engine import model_ready, download_worker, transcribe_job
 from .queue_store import TaskQueue
 from .history import HistoryStore
+from .crash_recovery import (load_marker, write_marker, update_checkpoint,
+                             clear_marker, restore_missing_task)
 from .preflight import analyze_queue, report_text
 from .eta import record_sample
 from .hardware import analyze_hardware, hardware_summary
@@ -89,7 +91,22 @@ class Window(QMainWindow):
             if broken.exists():
                 broken.rename(self.root / f'queue-damaged-{time.time_ns()}.json')
             self.tasks = TaskQueue(self.root)
-            self.queue_warning = f'Не вдалося відкрити чергу: {exc}. Сеанси можна відкрити вручну.'
+            self.queue_warning = f'Не вдалося відкрити чергу: {exc}. Спробую відновити активну задачу з crash-маркера; інші сеанси можна відкрити вручну.'
+
+        self.crash_marker = load_marker(self.root)
+        self.crash_recovered_task = None
+        if self.crash_marker:
+            try:
+                self.crash_recovered_task = restore_missing_task(self.tasks, self.crash_marker)
+                if self.crash_recovered_task and self.crash_recovered_task.get('status') == 'done':
+                    clear_marker(self.root)
+                    self.crash_marker = None
+                elif not self.crash_recovered_task:
+                    clear_marker(self.root)
+                    self.crash_marker = None
+            except (OSError, ValueError, KeyError, TypeError):
+                # The normal queue/session recovery path still remains available.
+                self.crash_recovered_task = None
 
         self.history_warning = None
         try:
@@ -309,9 +326,29 @@ class Window(QMainWindow):
                 pass
         incomplete = [t for t in self.tasks.tasks if t['status'] in ('interrupted', 'error')]
         if incomplete:
-            answer = QMessageBox.question(self, 'Відновлення', f'Є незавершені файли: {len(incomplete)}. Продовжити з останніх контрольних точок?')
+            if self.crash_marker and self.crash_recovered_task:
+                position = self.crash_recovered_task.get('position', self.crash_recovered_task.get('start', 0))
+                name = Path(self.crash_recovered_task.get('source') or '').name or 'активний файл'
+                prompt = (
+                    'WhisperDesk не завершив попередній запуск штатно.\n\n'
+                    f'Відновлено: {name}\n'
+                    f'Остання безпечна точка: {clock(position)}\n'
+                    f'Незавершених файлів у черзі: {len(incomplete)}\n\n'
+                    'Продовжити з останніх контрольних точок?'
+                )
+                title = 'Відновлення після аварійного завершення'
+            else:
+                prompt = f'Є незавершені файли: {len(incomplete)}. Продовжити з останніх контрольних точок?'
+                title = 'Відновлення'
+            answer = QMessageBox.question(self, title, prompt)
+            # Queue + journal are now reconciled; the marker is only evidence
+            # of the previous unclean exit and must not stay stale.
+            clear_marker(self.root)
+            self.crash_marker = None
             if answer == QMessageBox.StandardButton.Yes:
                 self.start_queue()
+            else:
+                self.status.setText('Незавершені задачі залишено в черзі. Їх можна продовжити пізніше.')
             return
         if not self.settings.get('initial_download_attempted'):
             self.settings['initial_download_attempted'] = True
@@ -671,6 +708,10 @@ class Window(QMainWindow):
             if task['id'] in self.cpu_fallback_ids:
                 job.device = 'cpu'
             Path(job.session + '.gpu-attempt').unlink(missing_ok=True)
+            try:
+                write_marker(self.root, task, __version__)
+            except OSError as exc:
+                task['warning'] = f'Не вдалося записати crash-маркер: {exc}. Session-checkpoint-и залишаються активними.'
             self.begin_process(transcribe_job, (job,), 'transcribe')
         except Exception as exc:
             task['status'] = 'error'; task['error'] = str(exc); self.tasks.save(); self.refresh_list()
@@ -701,6 +742,8 @@ class Window(QMainWindow):
         try:
             self.process.start()
         except Exception:
+            if operation == 'transcribe':
+                clear_marker(self.root)
             self.process = None; self.channel.close(); raise
         self.start_button.setEnabled(False); self.stop_file.setEnabled(True); self.stop_queue.setEnabled(True)
         self.settings_button.setEnabled(False)
@@ -726,7 +769,13 @@ class Window(QMainWindow):
                 self.text.appendPlainText(transcript_text([payload], self.stamps.isChecked()))
             elif kind == 'checkpoint' and task:
                 task['position'] = payload
-                # Journal is authoritative. Queue is saved at lifecycle boundaries.
+                # The journal is authoritative; queue + marker mirror the latest
+                # committed checkpoint so an OS/app crash can recover immediately.
+                try:
+                    self.tasks.save()
+                    update_checkpoint(self.root, task['id'], payload)
+                except OSError:
+                    pass
                 self.runtime.setText(f'Автозбережено · {clock(payload)}')
                 self.refresh_list()
             elif kind == 'progress':
@@ -830,7 +879,10 @@ class Window(QMainWindow):
         self.settings_button.setEnabled(True)
         if self.progress.maximum() == 0:
             self.progress.setRange(0, 1000); self.progress.setValue(0)
-        self.tasks.save(); self.refresh_list(); self.select_task(); self.update_help()
+        self.tasks.save()
+        if task and self.operation == 'transcribe' and not fallback_retry:
+            clear_marker(self.root)
+        self.refresh_list(); self.select_task(); self.update_help()
         self.status.setText(message)
         if self.close_when_stopped:
             self.close(); return
