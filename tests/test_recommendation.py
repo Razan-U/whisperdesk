@@ -1,4 +1,4 @@
-from whisperdesk.recommendation import recommend, recommendation_text
+from whisperdesk.recommendation import recommend, recommendation_text, apply_recommendation
 
 
 GB = 1024 ** 3
@@ -58,3 +58,45 @@ def test_recommendation_text_is_user_facing():
     text = recommendation_text({'model': 'turbo', 'device': 'auto', 'reason': 'Тестова причина.'})
     assert 'Прискорена велика · turbo + Авто' in text
     assert 'Тестова причина.' in text
+
+
+
+def test_apply_recommendation_changes_runnable_new_tasks(tmp_path):
+    tasks = [{
+        'status': 'pending',
+        'model': 'base',
+        'device': 'cpu',
+        'session': str(tmp_path / 'new.jsonl'),
+    }]
+    result = apply_recommendation(tasks, {'model': 'turbo', 'device': 'auto'})
+    assert tasks[0]['model'] == 'turbo'
+    assert tasks[0]['device'] == 'auto'
+    assert result == {'changed': 1, 'model_locked': 0}
+
+
+def test_apply_recommendation_preserves_model_for_resume_session(tmp_path):
+    session = tmp_path / 'resume.jsonl'
+    session.write_text('{}\n', encoding='utf-8')
+    tasks = [{
+        'status': 'interrupted',
+        'model': 'base',
+        'device': 'cpu',
+        'session': str(session),
+    }]
+    result = apply_recommendation(tasks, {'model': 'turbo', 'device': 'auto'})
+    assert tasks[0]['model'] == 'base'
+    assert tasks[0]['device'] == 'auto'
+    assert result == {'changed': 1, 'model_locked': 1}
+
+
+def test_apply_recommendation_does_not_touch_completed_task(tmp_path):
+    tasks = [{
+        'status': 'done',
+        'model': 'base',
+        'device': 'cpu',
+        'session': str(tmp_path / 'done.jsonl'),
+    }]
+    result = apply_recommendation(tasks, {'model': 'turbo', 'device': 'auto'})
+    assert tasks[0]['model'] == 'base'
+    assert tasks[0]['device'] == 'cpu'
+    assert result == {'changed': 0, 'model_locked': 0}
