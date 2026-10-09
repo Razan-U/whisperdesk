@@ -8,6 +8,7 @@ from .core import MODELS, validate_range, recovery, fingerprint
 from .engine import model_ready
 from .eta import estimate_task, format_eta, load_calibration
 from .hardware import analyze_hardware, hardware_summary, hardware_messages
+from .recommendation import recommend, recommendation_text
 
 MODEL_BYTES = {
     'base': 150 * 1024**2,
@@ -61,6 +62,7 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         'eta_max_seconds': 0.0,
         'eta_confidence': 'початкова',
         'hardware': None,
+        'recommendation': None,
     }
     if not candidates:
         report['blockers'].append('У черзі немає файлів, які потрібно запускати.')
@@ -195,6 +197,11 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
                 'У режимі «Авто» застосунок може перейти на CPU.'
             )
 
+    if report.get('hardware'):
+        profiles = [task.get('profile', 'eco') for task in candidates]
+        profile = profiles[0] if profiles and len(set(profiles)) == 1 else 'eco'
+        report['recommendation'] = recommend(report['hardware'], report['seconds'], profile)
+
     if report['devices'].get('auto', 0):
         if report.get('hardware') and report['hardware'].get('cuda_available'):
             report['notes'].append(
@@ -231,6 +238,8 @@ def report_text(report):
         )
     if report.get('hardware'):
         lines.append('Залізо: ' + hardware_summary(report['hardware']))
+    if report.get('recommendation'):
+        lines.append('Рекомендовано: ' + recommendation_text(report['recommendation']))
     if report['models']:
         lines.append('Моделі: ' + ', '.join(f'{MODELS[key][0]} × {count}' for key, count in report['models'].items()))
     if report['devices']:
