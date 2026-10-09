@@ -22,6 +22,7 @@ from .queue_store import TaskQueue
 from .preflight import analyze_queue, report_text
 from .eta import record_sample
 from .hardware import analyze_hardware, hardware_summary
+from .recommendation import apply_recommendation
 from .updater import (auto_check_due, check_for_update, download_update,
                       launch_installer)
 from .theme import ACCENTS, stylesheet
@@ -443,17 +444,116 @@ class Window(QMainWindow):
                 for w in (self.language, self.model, self.entire): w.setEnabled(True)
                 self.load_fields(self.settings)
 
+    def show_recommendation(self, report, parent=None):
+        item = report.get('recommendation')
+        if not item:
+            self.info('Не вдалося сформувати рекомендацію для поточної черги.')
+            return False
+
+        dlg = QDialog(parent or self)
+        dlg.setWindowTitle('Рекомендований режим роботи')
+        dlg.resize(500, 330)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(label('Рекомендований режим роботи', 'heading'))
+
+        device_names = {'cpu': 'CPU', 'auto': 'Авто', 'cuda': 'NVIDIA CUDA'}
+        model_name = MODELS.get(item.get('model'), (item.get('model', 'Невідома модель'), '', ''))[0]
+        device_name = device_names.get(item.get('device'), item.get('device', 'Невідомий режим'))
+
+        recommended = label(
+            f'Модель: {model_name}\nРежим: {device_name}',
+            'heading',
+        )
+        recommended.setWordWrap(True)
+        layout.addWidget(recommended)
+
+        reason = label(item.get('reason') or 'Рекомендація сформована за характеристиками цього ПК.', 'muted')
+        reason.setWordWrap(True)
+        layout.addWidget(reason)
+
+        runnable = [
+            task for task in self.tasks.tasks
+            if task.get('status') in ('pending', 'interrupted', 'error')
+        ]
+        current_pairs = {(task.get('model'), task.get('device')) for task in runnable}
+        if len(current_pairs) == 1:
+            current_model, current_device = next(iter(current_pairs))
+            current_model_name = MODELS.get(current_model, (current_model, '', ''))[0]
+            current_device_name = device_names.get(current_device, current_device)
+            current = label(
+                f'Поточний вибір: {current_model_name} + {current_device_name}',
+                'muted',
+            )
+            current.setWordWrap(True)
+            layout.addWidget(current)
+
+        locked = sum(
+            1 for task in runnable
+            if task.get('session') and Path(task['session']).exists()
+            and task.get('model') != item.get('model')
+        )
+        if locked:
+            note = label(
+                f'Для відновлюваних файлів ({locked}) модель не змінюватиметься, '
+                'щоб не пошкодити сумісність із контрольними точками. Режим CPU/GPU можна змінити.',
+                'muted',
+            )
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
+        buttons = QDialogButtonBox()
+        reject_button = buttons.addButton('Відхилити', QDialogButtonBox.ButtonRole.RejectRole)
+        apply_button = buttons.addButton('✓  Застосувати', QDialogButtonBox.ButtonRole.AcceptRole)
+        reject_button.clicked.connect(dlg.reject)
+
+        applied = {'value': False}
+
+        def apply_choice():
+            stats = apply_recommendation(self.tasks.tasks, item)
+            self.settings['model'] = item['model']
+            self.settings['device'] = item['device']
+            self.save_settings()
+            self.tasks.save()
+            self.refresh_list()
+            selected = self.selected()
+            if selected:
+                self.load_fields(selected)
+            applied['value'] = True
+            dlg.accept()
+            if stats['model_locked']:
+                self.status.setText(
+                    f'Рекомендацію застосовано. Для {stats["model_locked"]} відновлюваних файлів модель залишено без змін.'
+                )
+            else:
+                self.status.setText('Рекомендований режим застосовано до файлів, готових до запуску.')
+
+        apply_button.clicked.connect(apply_choice)
+
+        already_matches = bool(runnable) and all(
+            task.get('model') == item.get('model') and task.get('device') == item.get('device')
+            for task in runnable
+        )
+        if already_matches:
+            apply_button.setEnabled(False)
+            reason.setText((item.get('reason') or '') + '\n\nПоточні параметри вже відповідають рекомендації.')
+
+        layout.addStretch(1)
+        layout.addWidget(buttons)
+        dlg.exec()
+        return applied['value']
+
     def confirm_preflight(self):
         report = analyze_queue(self.tasks.tasks, self.model_folder, self.root)
         dlg = QDialog(self)
         dlg.setWindowTitle('Перевірка перед запуском')
-        dlg.resize(640, 460)
+        dlg.resize(620, 390)
         layout = QVBoxLayout(dlg)
-        title = 'Потрібна увага' if report['blockers'] else 'Готово до запуску'
+        title_text = 'Потрібна увага' if report['blockers'] else 'Готово до запуску'
+        title_label = label(title_text, 'heading')
+        layout.addWidget(title_label)
         subtitle = ('Виправте критичні проблеми перед стартом.'
                     if report['blockers'] else
-                    'Перевірте параметри. Транскрипція почнеться лише після підтвердження.')
-        layout.addWidget(label(title, 'heading'))
+                    'Перевірте основні параметри. Детальна рекомендація доступна окремо.')
         hint = label(subtitle, 'muted')
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -462,6 +562,20 @@ class Window(QMainWindow):
         details.setReadOnly(True)
         details.setPlainText(report_text(report))
         layout.addWidget(details, 1)
+
+        recommendation_button = button('★  Рекомендований режим роботи', lambda: None)
+        recommendation_button.setVisible(not report['blockers'] and bool(report.get('recommendation')))
+
+        def open_recommendation():
+            nonlocal report
+            if self.show_recommendation(report, dlg):
+                report = analyze_queue(self.tasks.tasks, self.model_folder, self.root)
+                details.setPlainText(report_text(report))
+                recommendation_button.setVisible(not report['blockers'] and bool(report.get('recommendation')))
+
+        recommendation_button.clicked.disconnect()
+        recommendation_button.clicked.connect(open_recommendation)
+        layout.addWidget(recommendation_button)
 
         buttons = QDialogButtonBox()
         if report['blockers']:
