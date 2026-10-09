@@ -190,3 +190,39 @@ def test_preflight_uses_saved_local_eta_calibration(tmp_path):
     assert report['eta_confidence'] == 'локальна · 1 замір'
     assert report['eta_min_seconds'] < 45 * 60 < report['eta_max_seconds']
     assert 'локальна · 1 замір' in report_text(report)
+
+
+def test_preflight_shows_non_binding_hardware_recommendation(tmp_path, monkeypatch):
+    import whisperdesk.preflight as preflight
+
+    (tmp_path / 'sessions').mkdir()
+    source = tmp_path / 'audio.wav'
+    source.write_bytes(b'audio')
+    monkeypatch.setattr(
+        preflight,
+        'analyze_hardware',
+        lambda: {
+            'cpu_logical': 12,
+            'ram_bytes': 32 * 1024**3,
+            'gpus': [{'name': 'NVIDIA Test', 'vram_bytes': 12 * 1024**3}],
+            'cuda_count': 1,
+            'cuda_available': True,
+        },
+    )
+
+    original = task(tmp_path, source, duration=1800, end=1800, model='base', device='cpu')
+    report = preflight.analyze_queue(
+        [original],
+        tmp_path / 'models',
+        tmp_path,
+        ready_checker=lambda path: True,
+    )
+
+    assert report['recommendation']['model'] == 'turbo'
+    assert report['recommendation']['device'] == 'auto'
+    text = preflight.report_text(report)
+    assert 'Рекомендовано:' in text
+    assert 'turbo + Авто' in text
+    # Recommendation must not mutate the queued task.
+    assert original['model'] == 'base'
+    assert original['device'] == 'cpu'
