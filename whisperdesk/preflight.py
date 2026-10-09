@@ -202,24 +202,13 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         profile = profiles[0] if profiles and len(set(profiles)) == 1 else 'eco'
         report['recommendation'] = recommend(report['hardware'], report['seconds'], profile)
 
-    if report['devices'].get('auto', 0):
-        if report.get('hardware') and report['hardware'].get('cuda_available'):
-            report['notes'].append(
-                'Режим «Авто»: на цьому ПК виявлена доступна NVIDIA CUDA. '
-                'Застосунок спочатку спробує GPU, а при помилці безпечно перейде на CPU.'
-            )
-        else:
-            report['notes'].append(
-                'Режим «Авто»: доступна NVIDIA CUDA не виявлена, тому очікується робота на CPU.'
-            )
-    if report['devices'].get('cuda', 0):
-        report['notes'].append('Режим NVIDIA CUDA: фактичне GPU-обчислення буде перевірено перед транскрипцією.')
+    if report['devices'].get('auto', 0) and not (
+            report.get('hardware') and report['hardware'].get('cuda_available')):
+        report['notes'].append(
+            'Режим «Авто»: доступна NVIDIA CUDA не виявлена, тому очікується робота на CPU.'
+        )
     if report['missing_models']:
-        report['notes'].append('ETA не включає час завантаження відсутніх моделей або NVIDIA-компонентів.')
-    if calibration:
-        report['notes'].append('ETA використовує локальні заміри швидкості цього ПК для сумісних налаштувань.')
-    else:
-        report['notes'].append('Після завершених транскрипцій ETA автоматично калібруватиметься під цей ПК.')
+        report['notes'].append('Час завантаження відсутніх моделей не входить у ETA.')
 
     return report
 
@@ -236,18 +225,11 @@ def report_text(report):
             f'{format_eta(report["eta_max_seconds"])} '
             f'(точність: {report.get("eta_confidence", "середня")})'
         )
-    if report.get('hardware'):
-        lines.append('Залізо: ' + hardware_summary(report['hardware']))
-    if report.get('recommendation'):
-        lines.append('Рекомендовано: ' + recommendation_text(report['recommendation']))
     if report['models']:
         lines.append('Моделі: ' + ', '.join(f'{MODELS[key][0]} × {count}' for key, count in report['models'].items()))
     if report['devices']:
         names = {'cpu': 'CPU', 'auto': 'Авто', 'cuda': 'NVIDIA CUDA'}
         lines.append('Режими: ' + ', '.join(f'{names.get(key, key)} × {count}' for key, count in report['devices'].items()))
-    if report['free_bytes'] is not None:
-        lines.append(f'Вільно в папці даних: {_format_bytes(report["free_bytes"])}')
-
     if report['blockers']:
         lines += ['', 'ПОТРІБНО ВИПРАВИТИ:']
         lines += [f'• {item}' for item in report['blockers']]
