@@ -226,3 +226,39 @@ def test_preflight_shows_non_binding_hardware_recommendation(tmp_path, monkeypat
     # Recommendation must not mutate the queued task.
     assert original['model'] == 'base'
     assert original['device'] == 'cpu'
+
+
+
+def test_main_preflight_text_stays_compact_and_hides_hardware_recommendation(tmp_path, monkeypatch):
+    import whisperdesk.preflight as preflight
+
+    (tmp_path / 'sessions').mkdir()
+    source = tmp_path / 'audio.wav'
+    source.write_bytes(b'audio')
+    monkeypatch.setattr(
+        preflight,
+        'analyze_hardware',
+        lambda: {
+            'cpu_logical': 12,
+            'ram_bytes': 16 * 1024**3,
+            'gpus': [{'name': 'NVIDIA Test', 'vram_bytes': 4 * 1024**3}],
+            'cuda_count': 1,
+            'cuda_available': True,
+        },
+    )
+
+    report = preflight.analyze_queue(
+        [task(tmp_path, source, duration=1200, end=1200)],
+        tmp_path / 'models',
+        tmp_path,
+        ready_checker=lambda path: True,
+    )
+    text = preflight.report_text(report)
+
+    assert report['recommendation']
+    assert 'Залізо:' not in text
+    assert 'Рекомендовано:' not in text
+    assert 'Вільно в папці даних:' not in text
+    assert 'CUDA доступна: знайдено' not in text
+    assert 'Файлів до запуску:' in text
+    assert 'Орієнтовний час обробки:' in text
