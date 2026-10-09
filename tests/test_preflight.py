@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from whisperdesk.preflight import analyze_queue, report_text
-from whisperdesk.eta import estimate_task, load_calibration, record_sample
+from whisperdesk.eta import estimate_task, load_calibration, record_sample, calibration_key
 from whisperdesk.core import fingerprint
 
 
@@ -264,3 +264,47 @@ def test_main_preflight_text_stays_compact_and_hides_hardware_recommendation(tmp
     assert 'CUDA доступна: знайдено' not in text
     assert 'Файлів до запуску:' in text
     assert 'Орієнтовний час обробки:' in text
+
+
+
+def test_auto_eta_calibration_is_split_by_actual_backend(tmp_path):
+    task_data = {'model': 'turbo', 'device': 'auto', 'profile': 'fast', 'threads': 0}
+    assert record_sample(tmp_path, task_data, 600, 30, actual_device='cuda')
+    assert record_sample(tmp_path, task_data, 600, 900, actual_device='cpu')
+    calibration = load_calibration(tmp_path)
+
+    cuda_task = {**task_data, '_eta_backend': 'cuda'}
+    cpu_task = {**task_data, '_eta_backend': 'cpu'}
+    assert calibration_key(cuda_task) != calibration_key(cpu_task)
+
+    cuda_eta = estimate_task(cuda_task, 600, calibration)
+    cpu_eta = estimate_task(cpu_task, 600, calibration)
+    assert cuda_eta[1] < cpu_eta[0]
+
+
+def test_auto_eta_ignores_legacy_mixed_auto_bucket(tmp_path):
+    import json
+    legacy_key = 'turbo|auto|fast|4'
+    (tmp_path / 'eta-calibration.json').write_text(
+        json.dumps({'version': 1, 'profiles': {legacy_key: {'samples': [0.05, 1.5]}}}),
+        encoding='utf-8',
+    )
+    calibration = load_calibration(tmp_path)
+    task_data = {
+        'model': 'turbo', 'device': 'auto', 'profile': 'fast', 'threads': 4,
+        '_eta_backend': 'cuda',
+    }
+    low, high, confidence = estimate_task(task_data, 600, calibration)
+    assert confidence == 'низька'
+    assert high > low
+
+
+def test_calibrated_eta_resists_single_slow_outlier(tmp_path):
+    settings = {'model': 'turbo', 'device': 'cuda', 'profile': 'fast', 'threads': 4}
+    for rtf in (0.043, 0.047, 0.049, 0.052, 0.30):
+        assert record_sample(tmp_path, settings, 600, 600 * rtf)
+    calibration = load_calibration(tmp_path)
+    low, high, confidence = estimate_task(settings, 600, calibration)
+    assert confidence == 'локальна · 5 замірів'
+    assert high < 60
+    assert low < 30 < high
