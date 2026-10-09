@@ -950,6 +950,7 @@ class Window(QMainWindow):
                                 self.operation_eta_sample['task'],
                                 self.operation_eta_sample['audio_seconds'],
                                 time.monotonic() - self.operation_started_at,
+                                actual_device=self.operation_actual_device,
                             )
                         except (OSError, ValueError, TypeError):
                             pass
