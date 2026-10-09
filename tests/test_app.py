@@ -332,3 +332,194 @@ def test_repeat_history_full_file_tracks_new_duration(tmp_path, monkeypatch, aud
     assert task['end'] == task['duration'] == 55
     w.close()
     app.processEvents()
+
+
+
+class _DummyCancelEvent:
+    def __init__(self):
+        self.was_set = False
+
+    def set(self):
+        self.was_set = True
+
+
+class _DummyCloseEvent:
+    def __init__(self):
+        self.accepted = False
+        self.ignored = False
+
+    def accept(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.ignored = True
+
+
+def test_pause_resume_queue_preserves_task_for_safe_resume(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    task = w.selected()
+    task['status'] = 'running'
+    task['position'] = 12.0
+    w.tasks.save()
+
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.operation = 'transcribe'
+    w.active_id = task['id']
+    w.running_queue = True
+
+    w.pause_queue()
+
+    assert cancel.was_set is True
+    assert w.queue_paused is True
+    assert w.pause_requested is True
+    assert w.paused_task_id == task['id']
+    assert w.running_queue is True
+
+    # Simulate the worker having stopped at the safe checkpoint.
+    w.process = None
+    w.pause_requested = False
+    task['status'] = 'interrupted'
+    called = []
+    monkeypatch.setattr(w, 'next_task', lambda: called.append(True))
+
+    w.resume_queue()
+
+    assert w.queue_paused is False
+    assert w.running_queue is True
+    assert task['status'] == 'pending'
+    assert task['position'] == 12.0
+    assert w.paused_task_id is None
+
+    w.running_queue = False
+    w.close()
+    app.processEvents()
+
+
+def test_stop_queue_reject_keeps_active_processing(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    w.request_stop_queue()
+
+    assert cancel.was_set is False
+    assert w.running_queue is True
+
+    w.process = None
+    w.running_queue = False
+    w.close()
+    app.processEvents()
+
+
+def test_stop_queue_confirm_requests_safe_cancel(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    w.request_stop_queue()
+
+    assert cancel.was_set is True
+    assert w.running_queue is False
+    assert w.cancel_deadline is not None
+
+    w.process = None
+    w.close()
+    app.processEvents()
+
+
+def test_close_active_job_can_be_cancelled_by_user(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    event = _DummyCloseEvent()
+    w.closeEvent(event)
+
+    assert event.ignored is True
+    assert event.accepted is False
+    assert cancel.was_set is False
+    assert w.close_when_stopped is False
+
+    w.process = None
+    w.running_queue = False
+    w.close()
+    app.processEvents()
+
+
+def test_close_active_job_confirmed_requests_safe_stop(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    event = _DummyCloseEvent()
+    w.closeEvent(event)
+
+    assert event.ignored is True
+    assert cancel.was_set is True
+    assert w.close_when_stopped is True
+    assert w.running_queue is False
+
+    w.process = None
+    w.close_when_stopped = False
+    w.close()
+    app.processEvents()
