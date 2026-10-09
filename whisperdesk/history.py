@@ -1,5 +1,7 @@
 """Persistent local transcription history, independent from the active queue."""
 from pathlib import Path
+import calendar
+from datetime import datetime
 import json
 import time
 import uuid
@@ -66,3 +68,50 @@ class HistoryStore:
 
     def get(self, ident):
         return next((item for item in self.records if item.get('id') == ident), None)
+
+    def delete(self, ident):
+        before = len(self.records)
+        self.records = [item for item in self.records if item.get('id') != ident]
+        changed = len(self.records) != before
+        if changed:
+            self.save()
+        return changed
+
+    def clear(self):
+        count = len(self.records)
+        if count:
+            self.records = []
+            self.save()
+        return count
+
+    def purge_older_than_months(self, months, now=None):
+        cutoff = cutoff_timestamp_months(months, now)
+        kept = []
+        removed = 0
+        for item in self.records:
+            try:
+                created = float(item.get('created_at'))
+            except (TypeError, ValueError):
+                kept.append(item)
+                continue
+            if created < cutoff:
+                removed += 1
+            else:
+                kept.append(item)
+        if removed:
+            self.records = kept
+            self.save()
+        return removed
+
+
+
+def cutoff_timestamp_months(months, now=None):
+    """Calendar-aware cutoff: the same local day/time N months ago."""
+    months = max(1, int(months))
+    current = datetime.fromtimestamp(time.time() if now is None else float(now))
+    total = current.year * 12 + (current.month - 1) - months
+    year, month0 = divmod(total, 12)
+    month = month0 + 1
+    day = min(current.day, calendar.monthrange(year, month)[1])
+    cutoff = current.replace(year=year, month=month, day=day)
+    return cutoff.timestamp()
