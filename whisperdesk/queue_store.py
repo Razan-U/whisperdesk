@@ -2,7 +2,7 @@
 from pathlib import Path
 import json
 import uuid
-from .core import atomic_text, recovery
+from .core import atomic_text, recovery, transcript_text
 
 
 class TaskQueue:
@@ -12,15 +12,33 @@ class TaskQueue:
         self.tasks = []
         if self.path.exists():
             self.tasks = json.loads(self.path.read_text(encoding='utf-8'))['tasks']
+        changed = False
         for task in self.tasks:
-            if task['status'] == 'running':
+            previous_status = task.get('status')
+            if previous_status == 'running':
                 task['status'] = 'interrupted'
+                changed = True
             session = Path(task['session'])
             if session.exists():
                 state = recovery(session)
-                task['position'] = state['position'] if state['position'] is not None else task['start']
-                if state['complete']:
+                position = state['position'] if state['position'] is not None else task['start']
+                if task.get('position') != position:
+                    task['position'] = position
+                    changed = True
+                if state['complete'] and task.get('status') != 'done':
                     task['status'] = 'done'
+                    changed = True
+                elif (state.get('job') and position > float(task.get('start') or 0) + .05
+                      and task.get('status') == 'pending'):
+                    task['status'] = 'interrupted'
+                    changed = True
+                if state.get('rows'):
+                    try:
+                        atomic_text(session.with_suffix('.txt'), transcript_text(state['rows']))
+                    except OSError:
+                        pass
+        if changed:
+            self.save()
 
     def save(self):
         atomic_text(self.path, json.dumps({'version': 2, 'tasks': self.tasks}, ensure_ascii=False, indent=2))
