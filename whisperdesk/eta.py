@@ -26,11 +26,14 @@ def _cpu_scale(task):
     return max(0.85, min(1.60, (4.0 / max(1, threads)) ** 0.30))
 
 
-def calibration_key(task):
+def calibration_key(task, actual_device=None):
     model = task.get('model', '')
     device = task.get('device', 'cpu')
     profile = task.get('profile', 'eco')
     threads = thread_count(profile, int(task.get('threads') or 0))
+    if device == 'auto':
+        backend = actual_device or task.get('_eta_backend')
+        device = f'auto>{backend}' if backend in ('cpu', 'cuda') else 'auto>unknown'
     return f'{model}|{device}|{profile}|{threads}'
 
 
@@ -45,8 +48,12 @@ def load_calibration(root):
     return data['profiles']
 
 
-def record_sample(root, task, audio_seconds, elapsed_seconds):
-    """Persist one completed local speed sample. Never stores file names or transcript text."""
+def record_sample(root, task, audio_seconds, elapsed_seconds, actual_device=None):
+    """Persist one completed local speed sample. Never stores file names or transcript text.
+
+    Auto is calibrated against the backend that actually completed the job,
+    so old CPU Auto runs cannot pollute CUDA ETA (and vice versa).
+    """
     audio = float(audio_seconds)
     elapsed = float(elapsed_seconds)
     if audio < 60 or elapsed <= 0:
@@ -56,7 +63,7 @@ def record_sample(root, task, audio_seconds, elapsed_seconds):
         return False
 
     profiles = load_calibration(root)
-    key = calibration_key(task)
+    key = calibration_key(task, actual_device)
     item = profiles.get(key) if isinstance(profiles.get(key), dict) else {}
     samples = item.get('samples') if isinstance(item.get('samples'), list) else []
     clean = []
@@ -88,8 +95,14 @@ def _calibrated_range(samples):
         low, high = min(clean) * 0.85, max(clean) * 1.15
         confidence = f'локальна · {count} заміри'
     else:
-        low = min(center * 0.85, min(clean) * 0.95)
-        high = max(center * 1.15, max(clean) * 1.05)
+        # Once several measurements exist, one throttled/background-load run
+        # must not keep ETA permanently huge. Median absolute deviation gives a
+        # robust spread while retaining at least ±18% natural runtime variance.
+        deviations = [abs(value - center) for value in clean]
+        mad = statistics.median(deviations)
+        spread = max(center * 0.18, mad * 3.0)
+        low = max(center * 0.50, center - spread)
+        high = center + spread
         confidence = f'локальна · {count} замірів'
     return low, high, confidence
 
