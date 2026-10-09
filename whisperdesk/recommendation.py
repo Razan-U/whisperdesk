@@ -1,5 +1,7 @@
 """Conservative model/device recommendations based on local hardware and workload."""
 
+from pathlib import Path
+
 from .core import MODELS
 
 GB = 1024 ** 3
@@ -89,3 +91,41 @@ def recommendation_text(item):
     device = device_names.get(item.get('device'), item.get('device', 'невідомий режим'))
     reason = item.get('reason', '').strip()
     return f'{model} + {device}' + (f' — {reason}' if reason else '')
+
+
+
+def apply_recommendation(tasks, item):
+    """Apply a recommendation safely to runnable queue items.
+
+    Existing resumable sessions keep their model because changing it would make
+    the saved transcript incompatible; their runtime device may still change.
+    """
+    if not item:
+        return {'changed': 0, 'model_locked': 0}
+    model = item.get('model')
+    device = item.get('device')
+    changed = 0
+    model_locked = 0
+
+    for task in tasks:
+        if task.get('status') not in ('pending', 'interrupted', 'error'):
+            continue
+        session = Path(task.get('session') or '')
+        has_session = bool(task.get('session')) and session.exists()
+        task_changed = False
+
+        if has_session:
+            if model and task.get('model') != model:
+                model_locked += 1
+        elif model and task.get('model') != model:
+            task['model'] = model
+            task_changed = True
+
+        if device and task.get('device') != device:
+            task['device'] = device
+            task_changed = True
+
+        if task_changed:
+            changed += 1
+
+    return {'changed': changed, 'model_locked': model_locked}
