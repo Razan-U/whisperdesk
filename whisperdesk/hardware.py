@@ -184,6 +184,4 @@ def hardware_messages(info):
     gpus = info.get('gpus') or []
     if gpus and not info.get('cuda_available'):
         notes.append('NVIDIA знайдена, але CUDA недоступна. Авто-режим використає CPU; варто перевірити драйвер NVIDIA.')
-    if info.get('cuda_available'):
-        notes.append(f'CUDA доступна: знайдено NVIDIA-пристроїв — {int(info.get("cuda_count") or 1)}.')
     return warnings, notes
