@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 import json
 import math
 import multiprocessing as mp
@@ -19,6 +20,7 @@ from .core import (MODELS, Job, data_dir, parse_time, clock, validate_range,
                    atomic_text, transcript_text, load_session, recovery)
 from .engine import model_ready, download_worker, transcribe_job
 from .queue_store import TaskQueue
+from .history import HistoryStore
 from .preflight import analyze_queue, report_text
 from .eta import record_sample
 from .hardware import analyze_hardware, hardware_summary
@@ -80,11 +82,23 @@ class Window(QMainWindow):
                 broken.rename(self.root / f'queue-damaged-{time.time_ns()}.json')
             self.tasks = TaskQueue(self.root)
             self.queue_warning = f'Не вдалося відкрити чергу: {exc}. Сеанси можна відкрити вручну.'
+
+        self.history_warning = None
+        try:
+            self.history = HistoryStore(self.root)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            broken = self.root / 'history.json'
+            if broken.exists():
+                broken.rename(self.root / f'history-damaged-{time.time_ns()}.json')
+            self.history = HistoryStore(self.root)
+            self.history_warning = f'Не вдалося відкрити історію: {exc}. Пошкоджений файл збережено окремо.'
+
         self.process = self.channel = self.cancel_event = None
         self.active_id = None
         self.operation = None
         self.operation_started_at = None
         self.operation_eta_sample = None
+        self.operation_actual_device = None
         self.running_queue = False
         self.cancel_deadline = None
         self.close_when_stopped = False
@@ -133,6 +147,7 @@ class Window(QMainWindow):
         tools.addWidget(button('Прибрати', self.remove_task))
         side.addLayout(tools)
         side.addWidget(button('Відкрити сеанс', self.restore_session))
+        side.addWidget(button('Історія', self.open_history))
         self.queue_count = label('0 файлів', 'muted')
         side.addWidget(self.queue_count)
         body.addWidget(sidebar)
@@ -276,6 +291,8 @@ class Window(QMainWindow):
             self.save_settings()
         if self.queue_warning:
             self.info(self.queue_warning)
+        if self.history_warning:
+            self.info(self.history_warning)
         incomplete = [t for t in self.tasks.tasks if t['status'] in ('interrupted', 'error')]
         if incomplete:
             answer = QMessageBox.question(self, 'Відновлення', f'Є незавершені файли: {len(incomplete)}. Продовжити з останніх контрольних точок?')
@@ -651,6 +668,7 @@ class Window(QMainWindow):
         self.operation = operation; self.finished_message = None; self.failed = False
         self.operation_started_at = time.monotonic()
         self.operation_eta_sample = None
+        self.operation_actual_device = None
         if operation == 'transcribe' and args:
             job = args[0]
             resume = job.resume if job.resume is not None else job.start
@@ -703,7 +721,12 @@ class Window(QMainWindow):
             elif kind == 'warning' and task:
                 task['warning'] = payload
                 if selected and selected['id'] == task['id']: self.show_diagnostics(task)
-            elif kind in ('device', 'language'): self.runtime.setText(payload)
+            elif kind == 'device':
+                upper = str(payload).strip().upper()
+                self.operation_actual_device = 'cuda' if upper.startswith('CUDA') else 'cpu' if upper.startswith('CPU') else None
+                self.runtime.setText(payload)
+            elif kind == 'language':
+                self.runtime.setText(payload)
             elif kind == 'status' and not self.cancel_deadline: self.status.setText(payload)
             elif kind in ('done', 'error'):
                 self.finished_message = payload
@@ -722,6 +745,11 @@ class Window(QMainWindow):
         message = self.finished_message or ('Зупинено. Можна продовжити.' if self.cancel_deadline else f'Процес завершився з кодом {exitcode}. Спробуйте CPU.')
         failed = self.failed or (not self.finished_message and not self.cancel_deadline) or exitcode not in (0, None) and not self.cancel_deadline
         task = self.tasks.get(self.active_id)
+        elapsed_for_history = (
+            max(0.0, time.monotonic() - self.operation_started_at)
+            if self.operation_started_at is not None else 0.0
+        )
+        fallback_retry = False
         if task:
             if self.operation == 'transcribe':
                 state = recovery(task['session']) if Path(task['session']).exists() else None
@@ -758,9 +786,24 @@ class Window(QMainWindow):
             task['warning'] = 'NVIDIA недоступна. Продовжено на CPU з останнього автозбереження.\n' + message
             task['error'] = ''
             message = 'Авто: повторний запуск на CPU з останнього автозбереження…'
+            fallback_retry = True
+
+        if task and self.operation == 'transcribe' and not fallback_retry:
+            try:
+                self.history.add_run(
+                    task,
+                    task.get('status', 'error'),
+                    elapsed_for_history,
+                    actual_device=self.operation_actual_device,
+                    message=message,
+                )
+            except (OSError, ValueError, TypeError):
+                pass
+
         self.channel.close(); self.process.close(); self.process = None
         self.operation_started_at = None
         self.operation_eta_sample = None
+        self.operation_actual_device = None
         self.active_id = None
         self.start_button.setEnabled(True); self.stop_file.setEnabled(False); self.stop_queue.setEnabled(False)
         self.settings_button.setEnabled(True)
@@ -793,6 +836,167 @@ class Window(QMainWindow):
             if not path.lower().endswith('.txt'): path += '.txt'
             try: atomic_text(path, self.text.toPlainText()+'\n'); self.status.setText(f'Збережено: {path}')
             except OSError as exc: self.info(exc)
+
+    def repeat_history_record(self, record):
+        if self.process:
+            self.info('Спочатку дочекайтеся завершення або зупиніть поточну чергу.')
+            return False
+        source = Path(record.get('source') or '')
+        if not source.is_file():
+            self.info('Оригінальний файл не знайдено. Поверніть його за початковим шляхом або додайте файл вручну.')
+            return False
+        try:
+            from .audio import probe
+            duration = float(probe(source))
+            settings = {
+                'language': record.get('language', 'uk'),
+                'model': record.get('model', 'base'),
+                'device': record.get('requested_device', 'cpu'),
+                'profile': record.get('profile', 'eco'),
+                'threads': int(record.get('threads') or 0),
+            }
+            task = self.tasks.add(str(source), duration, settings)
+
+            old_duration = float(record.get('duration') or 0)
+            old_start = max(0.0, float(record.get('start') or 0))
+            old_end = float(record.get('end') or old_duration)
+            full_file = old_start <= .05 and old_duration > 0 and abs(old_end - old_duration) <= .1
+            if full_file:
+                start, end = 0.0, duration
+            else:
+                start = min(old_start, max(0.0, duration - .05))
+                end = min(old_end, duration)
+                validate_range(start, end, duration)
+            task.update(start=start, end=end, position=start)
+            self.tasks.save()
+            self.refresh_list()
+            self.list.setCurrentRow(len(self.tasks.tasks) - 1)
+            self.select_task()
+            self.status.setText('Задачу з історії додано в кінець черги.')
+            return True
+        except Exception as exc:
+            self.info(exc)
+            return False
+
+    def open_history(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Історія транскрипцій')
+        dlg.resize(820, 560)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(label('Історія транскрипцій', 'heading'))
+        hint = label(
+            'Історія зберігається локально й не залежить від поточної черги. '
+            'Видалення задачі з черги не видаляє цей запис.',
+            'muted',
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        body = QHBoxLayout()
+        items = QListWidget()
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        body.addWidget(items, 1)
+        body.addWidget(details, 1)
+        layout.addLayout(body, 1)
+
+        records = self.history.newest()
+        for record in records:
+            source_name = Path(record.get('source') or '').name or 'Невідомий файл'
+            created = datetime.fromtimestamp(float(record.get('created_at') or 0)).strftime('%Y-%m-%d %H:%M')
+            status_text = STATUS.get(record.get('status'), record.get('status', 'Невідомо'))
+            item = QListWidgetItem(f'{source_name}\n{created} · {status_text}')
+            item.setData(Qt.ItemDataRole.UserRole, record.get('id'))
+            item.setToolTip(record.get('source') or '')
+            item.setSizeHint(QSize(330, 64))
+            items.addItem(item)
+
+        row = QHBoxLayout()
+        open_result_button = button('Відкрити результат', lambda: None)
+        open_source_button = button('Відкрити оригінал', lambda: None)
+        repeat_button = button('Повторити задачу', lambda: None, True)
+        row.addWidget(open_result_button)
+        row.addWidget(open_source_button)
+        row.addStretch()
+        row.addWidget(repeat_button)
+        layout.addLayout(row)
+        layout.addWidget(button('Закрити', dlg.accept))
+
+        def selected_record():
+            item = items.currentItem()
+            return self.history.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
+
+        def refresh_details():
+            record = selected_record()
+            enabled = bool(record)
+            open_result_button.setEnabled(enabled)
+            open_source_button.setEnabled(enabled)
+            repeat_button.setEnabled(enabled and not self.process)
+            if not record:
+                details.setPlainText('Історія поки порожня.')
+                return
+            model_name = MODELS.get(record.get('model'), (record.get('model', '—'), '', ''))[0]
+            requested_names = {'cpu': 'CPU', 'auto': 'Авто', 'cuda': 'NVIDIA CUDA'}
+            actual_names = {'cpu': 'CPU', 'cuda': 'NVIDIA CUDA', 'auto': 'Авто'}
+            source = record.get('source') or '—'
+            result_path = record.get('result_txt') or '—'
+            lines = [
+                f'Файл: {Path(source).name if source != "—" else source}',
+                f'Статус: {STATUS.get(record.get("status"), record.get("status", "—"))}',
+                f'Дата: {datetime.fromtimestamp(float(record.get("created_at") or 0)).strftime("%Y-%m-%d %H:%M:%S")}',
+                f'Аудіо: {clock(record.get("audio_seconds") or 0)}',
+                f'Фактичний час: {clock(round(record.get("elapsed_seconds") or 0))}',
+                f'Модель: {model_name}',
+                f'Запитаний режим: {requested_names.get(record.get("requested_device"), record.get("requested_device", "—"))}',
+                f'Фактичний режим: {actual_names.get(record.get("actual_device"), record.get("actual_device", "—"))}',
+                f'Мова: {record.get("language", "—")}',
+                f'Профіль: {record.get("profile", "—")} · потоки: {record.get("threads", 0) or "Авто"}',
+                '',
+                f'Оригінал: {source}',
+                f'Результат TXT: {result_path}',
+            ]
+            if record.get('message'):
+                lines.extend(['', 'Повідомлення:', str(record['message'])])
+            details.setPlainText('\n'.join(lines))
+
+        def open_result():
+            record = selected_record()
+            if not record:
+                return
+            path = Path(record.get('result_txt') or '')
+            if path.is_file():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            else:
+                self.info('TXT-результат не знайдено. Можливо, папку даних або файл було переміщено.')
+
+        def open_source():
+            record = selected_record()
+            if not record:
+                return
+            path = Path(record.get('source') or '')
+            if path.is_file():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            else:
+                self.info('Оригінальний файл більше не знаходиться за збереженим шляхом.')
+
+        def repeat():
+            record = selected_record()
+            if record and self.repeat_history_record(record):
+                dlg.accept()
+
+        open_result_button.clicked.disconnect()
+        open_result_button.clicked.connect(open_result)
+        open_source_button.clicked.disconnect()
+        open_source_button.clicked.connect(open_source)
+        repeat_button.clicked.disconnect()
+        repeat_button.clicked.connect(repeat)
+        items.currentRowChanged.connect(lambda *_: refresh_details())
+
+        if records:
+            items.setCurrentRow(0)
+        else:
+            refresh_details()
+        dlg.exec()
 
     def restore_session(self):
         if self.process: self.info('Спочатку зупиніть чергу.'); return
