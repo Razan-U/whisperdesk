@@ -221,8 +221,10 @@ def test_preflight_shows_non_binding_hardware_recommendation(tmp_path, monkeypat
     assert report['recommendation']['model'] == 'turbo'
     assert report['recommendation']['device'] == 'auto'
     text = preflight.report_text(report)
-    assert 'Рекомендовано:' in text
-    assert 'turbo + Авто' in text
+    # Recommendation is available to the dedicated dialog, not duplicated in
+    # the compact main preflight summary.
+    assert 'Рекомендовано:' not in text
+    assert report['recommendation']['reason']
     # Recommendation must not mutate the queued task.
     assert original['model'] == 'base'
     assert original['device'] == 'cpu'
