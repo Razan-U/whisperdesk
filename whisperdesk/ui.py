@@ -99,6 +99,7 @@ class Window(QMainWindow):
         self.operation_started_at = None
         self.operation_eta_sample = None
         self.operation_actual_device = None
+        self.history_run_started = {}
         self.running_queue = False
         self.cancel_deadline = None
         self.close_when_stopped = False
@@ -670,6 +671,8 @@ class Window(QMainWindow):
         self.operation_eta_sample = None
         self.operation_actual_device = None
         if operation == 'transcribe' and args:
+            if self.active_id:
+                self.history_run_started.setdefault(self.active_id, time.monotonic())
             job = args[0]
             resume = job.resume if job.resume is not None else job.start
             self.operation_eta_sample = {
@@ -745,9 +748,13 @@ class Window(QMainWindow):
         message = self.finished_message or ('Зупинено. Можна продовжити.' if self.cancel_deadline else f'Процес завершився з кодом {exitcode}. Спробуйте CPU.')
         failed = self.failed or (not self.finished_message and not self.cancel_deadline) or exitcode not in (0, None) and not self.cancel_deadline
         task = self.tasks.get(self.active_id)
+        history_started = self.history_run_started.get(
+            task['id'] if task else None,
+            self.operation_started_at,
+        )
         elapsed_for_history = (
-            max(0.0, time.monotonic() - self.operation_started_at)
-            if self.operation_started_at is not None else 0.0
+            max(0.0, time.monotonic() - history_started)
+            if history_started is not None else 0.0
         )
         fallback_retry = False
         if task:
@@ -789,6 +796,7 @@ class Window(QMainWindow):
             fallback_retry = True
 
         if task and self.operation == 'transcribe' and not fallback_retry:
+            self.history_run_started.pop(task['id'], None)
             try:
                 self.history.add_run(
                     task,
