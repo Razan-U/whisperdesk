@@ -5,7 +5,7 @@ import statistics
 
 from .core import atomic_text, thread_count
 
-CALIBRATION_VERSION = 1
+CALIBRATION_VERSION = 2
 CALIBRATION_FILE = 'eta-calibration.json'
 MAX_SAMPLES = 12
 
@@ -26,6 +26,10 @@ def _cpu_scale(task):
     return max(0.85, min(1.60, (4.0 / max(1, threads)) ** 0.30))
 
 
+def _language_bucket(task):
+    return 'mixed' if task.get('language') == 'mixed' else 'fixed'
+
+
 def calibration_key(task, actual_device=None):
     model = task.get('model', '')
     device = task.get('device', 'cpu')
@@ -34,7 +38,7 @@ def calibration_key(task, actual_device=None):
     if device == 'auto':
         backend = actual_device or task.get('_eta_backend')
         device = f'auto>{backend}' if backend in ('cpu', 'cuda') else 'auto>unknown'
-    return f'{model}|{device}|{profile}|{threads}'
+    return f'{model}|{device}|{profile}|{threads}|{_language_bucket(task)}'
 
 
 def load_calibration(root):
@@ -79,6 +83,54 @@ def record_sample(root, task, audio_seconds, elapsed_seconds, actual_device=None
     profiles[key] = {'samples': clean}
     payload = {'version': CALIBRATION_VERSION, 'profiles': profiles}
     atomic_text(Path(root) / CALIBRATION_FILE, json.dumps(payload, ensure_ascii=False, indent=2))
+    return True
+
+
+def migrate_calibration_from_history(root, records):
+    """One-time v2 migration from local History.
+
+    v1 mixed Auto samples cannot be separated reliably because the old file did
+    not store actual backend or language mode. History does, so rebuild from
+    completed local runs instead of guessing.
+    """
+    root = Path(root)
+    path = root / CALIBRATION_FILE
+    try:
+        current = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        current = None
+    if isinstance(current, dict) and current.get('version') == CALIBRATION_VERSION:
+        return False
+
+    profiles = {}
+    for record in records or []:
+        if not isinstance(record, dict) or record.get('status') != 'done':
+            continue
+        try:
+            audio = float(record.get('audio_seconds') or 0)
+            elapsed = float(record.get('elapsed_seconds') or 0)
+        except (TypeError, ValueError):
+            continue
+        actual = record.get('actual_device')
+        if audio < 60 or elapsed <= 0 or actual not in ('cpu', 'cuda'):
+            continue
+        rtf = elapsed / audio
+        if not 0.01 <= rtf <= 20:
+            continue
+        task = {
+            'model': record.get('model', ''),
+            'device': record.get('requested_device', 'cpu'),
+            'profile': record.get('profile', 'eco'),
+            'threads': int(record.get('threads') or 0),
+            'language': record.get('language', 'uk'),
+        }
+        key = calibration_key(task, actual)
+        item = profiles.setdefault(key, {'samples': []})
+        item['samples'].append(rtf)
+        item['samples'] = item['samples'][-MAX_SAMPLES:]
+
+    payload = {'version': CALIBRATION_VERSION, 'profiles': profiles}
+    atomic_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     return True
 
 
