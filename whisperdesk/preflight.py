@@ -146,7 +146,15 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
         if resume_position is not None:
             remaining = max(0.0, end - resume_position)
             report['seconds'] += remaining
-            estimate = estimate_task(task, remaining, calibration)
+            eta_task = task
+            if task.get('device') == 'auto':
+                eta_task = dict(task)
+                hardware = report.get('hardware') or {}
+                if hardware.get('cuda_available'):
+                    eta_task['_eta_backend'] = 'cuda'
+                elif report.get('hardware') is not None:
+                    eta_task['_eta_backend'] = 'cpu'
+            estimate = estimate_task(eta_task, remaining, calibration)
             if estimate:
                 low, high, confidence = estimate
                 report['eta_min_seconds'] += low
