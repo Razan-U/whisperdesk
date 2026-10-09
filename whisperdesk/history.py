@@ -50,7 +50,7 @@ class HistoryStore:
             'language': task.get('language', 'uk'),
             'model': task.get('model', 'base'),
             'requested_device': task.get('device', 'cpu'),
-            'actual_device': actual_device or task.get('device', 'cpu'),
+            'actual_device': actual_device or '',
             'profile': task.get('profile', 'eco'),
             'threads': int(task.get('threads') or 0),
             'session': session,
