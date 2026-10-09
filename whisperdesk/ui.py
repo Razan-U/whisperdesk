@@ -125,7 +125,11 @@ class Window(QMainWindow):
         self.operation_eta_sample = None
         self.operation_actual_device = None
         self.history_run_started = {}
+        self.history_run_elapsed = {}
         self.running_queue = False
+        self.queue_paused = False
+        self.pause_requested = False
+        self.paused_task_id = None
         self.cancel_deadline = None
         self.close_when_stopped = False
         self.forced_stop = False
@@ -253,10 +257,13 @@ class Window(QMainWindow):
         control.addWidget(self.update_status)
         row = QHBoxLayout()
         self.start_button = button('▶  Почати чергу', self.start_queue, True)
-        self.stop_file = button('Зупинити файл', lambda: self.stop_job(False))
-        self.stop_queue = button('Зупинити чергу', lambda: self.stop_job(True))
+        self.pause_button = button('⏸  Пауза', self.toggle_pause)
+        self.stop_file = button('Зупинити файл', self.request_stop_file)
+        self.stop_queue = button('Зупинити чергу', self.request_stop_queue)
+        self.pause_button.setEnabled(False)
         self.stop_file.setEnabled(False); self.stop_queue.setEnabled(False)
-        row.addWidget(self.start_button); row.addWidget(self.stop_file); row.addWidget(self.stop_queue)
+        row.addWidget(self.start_button); row.addWidget(self.pause_button)
+        row.addWidget(self.stop_file); row.addWidget(self.stop_queue)
         control.addLayout(row)
         main.addWidget(controls)
         row = QHBoxLayout()
@@ -660,6 +667,104 @@ class Window(QMainWindow):
         layout.addWidget(buttons)
         return dlg.exec() == QDialog.DialogCode.Accepted
 
+    def update_run_controls(self):
+        active = self.process is not None
+        if self.queue_paused:
+            if active:
+                self.pause_button.setText('⏳  Пауза…')
+                self.pause_button.setEnabled(False)
+            else:
+                self.pause_button.setText('▶  Продовжити')
+                self.pause_button.setEnabled(True)
+        else:
+            self.pause_button.setText('⏸  Пауза')
+            self.pause_button.setEnabled(bool(self.running_queue) and not self.pause_requested)
+
+        self.start_button.setEnabled(not active and not self.running_queue)
+        self.stop_file.setEnabled(active and not self.pause_requested)
+        self.stop_queue.setEnabled((active or self.running_queue) and not self.pause_requested)
+        self.settings_button.setEnabled(not active)
+
+    def toggle_pause(self):
+        if self.queue_paused:
+            self.resume_queue()
+        else:
+            self.pause_queue()
+
+    def pause_queue(self):
+        if not self.running_queue or self.queue_paused:
+            return
+        self.queue_paused = True
+
+        if self.process and self.operation == 'transcribe':
+            self.pause_requested = True
+            self.paused_task_id = self.active_id
+            self.cancel_event.set()
+            if not self.cancel_deadline:
+                self.cancel_deadline = time.monotonic() + 5
+            self.status.setText(
+                'Пауза… Завершуємо поточний безпечний фрагмент. '
+                'Продовження почнеться з останнього checkpoint-а.'
+            )
+        elif self.process:
+            self.status.setText('Черга стане на паузу після завершення поточної операції.')
+        else:
+            self.status.setText('Черга на паузі. Стан збережено.')
+
+        self.update_run_controls()
+
+    def resume_queue(self):
+        if self.process or not self.queue_paused:
+            return
+        if self.paused_task_id:
+            task = self.tasks.get(self.paused_task_id)
+            if task and task.get('status') == 'interrupted':
+                task['status'] = 'pending'
+                task['error'] = ''
+        self.queue_paused = False
+        self.pause_requested = False
+        self.paused_task_id = None
+        self.running_queue = True
+        self.tasks.save()
+        self.refresh_list()
+        self.status.setText('Чергу продовжено з останнього безпечного checkpoint-а.')
+        self.update_run_controls()
+        QTimer.singleShot(0, self.next_task)
+
+    def request_stop_file(self):
+        if not self.process:
+            return
+        answer = QMessageBox.question(
+            self,
+            'Зупинити поточний файл?',
+            'Поточна транскрипція буде зупинена на останньому безпечному checkpoint-і. '
+            'Її можна буде продовжити пізніше. Інші файли черги продовжать оброблятися.',
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.stop_job(False)
+
+    def request_stop_queue(self):
+        if not self.process and not self.running_queue:
+            return
+        answer = QMessageBox.question(
+            self,
+            'Зупинити всю чергу?',
+            'Поточна операція буде безпечно зупинена, а решта черги залишиться збереженою. '
+            'Пізніше її можна запустити знову.',
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.queue_paused = False
+        self.pause_requested = False
+        self.paused_task_id = None
+        if self.process:
+            self.stop_job(True)
+        else:
+            self.running_queue = False
+            self.status.setText('Чергу зупинено. Незавершені задачі збережено.')
+            self.update_run_controls()
+
     def start_queue(self):
         if self.process: return
         if not self.tasks.tasks: self.pick_files()
@@ -671,18 +776,22 @@ class Window(QMainWindow):
                 task['status'] = 'pending'; task['error'] = ''
         self.tasks.save()
         self.cpu_fallback_ids.clear()
+        self.queue_paused = False
+        self.pause_requested = False
+        self.paused_task_id = None
         self.running_queue = True
+        self.update_run_controls()
         self.next_task()
 
     def next_task(self):
-        if self.process or not self.running_queue: return
+        if self.process or not self.running_queue or self.queue_paused: return
         task = self.tasks.next()
         if not task:
             self.running_queue = False
             self.active_id = None
             counts = {key: sum(t['status'] == key for t in self.tasks.tasks) for key in ('done', 'error', 'interrupted')}
             self.status.setText(f"Чергу завершено · готово: {counts['done']} · помилок: {counts['error']} · перервано: {counts['interrupted']}. Подробиці — у вибраному файлі.")
-            self.start_button.setEnabled(True)
+            self.update_run_controls()
             if self.update_after_queue and self.downloaded_update:
                 QTimer.singleShot(500, lambda: self.install_downloaded_update())
             return
@@ -745,18 +854,22 @@ class Window(QMainWindow):
             if operation == 'transcribe':
                 clear_marker(self.root)
             self.process = None; self.channel.close(); raise
-        self.start_button.setEnabled(False); self.stop_file.setEnabled(True); self.stop_queue.setEnabled(True)
-        self.settings_button.setEnabled(False)
+        self.update_run_controls()
         self.progress.setRange(0, 0)
         self.status.setText('Завантаження моделі з інтернету…' if operation == 'download' else 'Завантаження моделі в пам’ять…')
 
     def stop_job(self, all_tasks=True):
-        if all_tasks: self.running_queue = False
+        if all_tasks:
+            self.running_queue = False
+        self.queue_paused = False
+        self.pause_requested = False
+        self.paused_task_id = None
         if self.process:
             self.cancel_event.set()
-            if not self.cancel_deadline: self.cancel_deadline = time.monotonic()+5
-            self.stop_file.setEnabled(False); self.stop_queue.setEnabled(False)
+            if not self.cancel_deadline:
+                self.cancel_deadline = time.monotonic() + 5
             self.status.setText('Зупинка… Останній завершений фрагмент збережено.')
+        self.update_run_controls()
 
     def consume(self):
         for _ in range(200):
@@ -807,17 +920,22 @@ class Window(QMainWindow):
         self.process.join()
         if not self.forced_stop: self.consume()
         exitcode = self.process.exitcode
-        message = self.finished_message or ('Зупинено. Можна продовжити.' if self.cancel_deadline else f'Процес завершився з кодом {exitcode}. Спробуйте CPU.')
+        message = self.finished_message or (
+            'Пауза. Можна продовжити з останнього checkpoint-а.'
+            if self.pause_requested else
+            ('Зупинено. Можна продовжити.' if self.cancel_deadline
+             else f'Процес завершився з кодом {exitcode}. Спробуйте CPU.')
+        )
         failed = self.failed or (not self.finished_message and not self.cancel_deadline) or exitcode not in (0, None) and not self.cancel_deadline
         task = self.tasks.get(self.active_id)
-        history_started = self.history_run_started.get(
-            task['id'] if task else None,
-            self.operation_started_at,
-        )
-        elapsed_for_history = (
+        task_id = task['id'] if task else None
+        history_started = self.history_run_started.get(task_id, self.operation_started_at)
+        current_elapsed = (
             max(0.0, time.monotonic() - history_started)
             if history_started is not None else 0.0
         )
+        elapsed_for_history = self.history_run_elapsed.get(task_id, 0.0) + current_elapsed
+        was_pause = bool(self.pause_requested and self.operation == 'transcribe')
         fallback_retry = False
         if task:
             if self.operation == 'transcribe':
@@ -857,8 +975,12 @@ class Window(QMainWindow):
             message = 'Авто: повторний запуск на CPU з останнього автозбереження…'
             fallback_retry = True
 
-        if task and self.operation == 'transcribe' and not fallback_retry:
+        if task and self.operation == 'transcribe' and was_pause:
+            self.history_run_elapsed[task['id']] = elapsed_for_history
             self.history_run_started.pop(task['id'], None)
+        elif task and self.operation == 'transcribe' and not fallback_retry:
+            self.history_run_started.pop(task['id'], None)
+            self.history_run_elapsed.pop(task['id'], None)
             try:
                 self.history.add_run(
                     task,
@@ -875,18 +997,22 @@ class Window(QMainWindow):
         self.operation_eta_sample = None
         self.operation_actual_device = None
         self.active_id = None
-        self.start_button.setEnabled(True); self.stop_file.setEnabled(False); self.stop_queue.setEnabled(False)
-        self.settings_button.setEnabled(True)
+        if was_pause:
+            self.pause_requested = False
+        self.update_run_controls()
         if self.progress.maximum() == 0:
             self.progress.setRange(0, 1000); self.progress.setValue(0)
         self.tasks.save()
         if task and self.operation == 'transcribe' and not fallback_retry:
             clear_marker(self.root)
         self.refresh_list(); self.select_task(); self.update_help()
-        self.status.setText(message)
+        if self.queue_paused and not self.close_when_stopped:
+            self.status.setText('Черга на паузі. Стан збережено; натисніть «Продовжити».')
+        else:
+            self.status.setText(message)
         if self.close_when_stopped:
             self.close(); return
-        if self.running_queue:
+        if self.running_queue and not self.queue_paused:
             QTimer.singleShot(0, self.next_task)
         elif self.update_after_queue and self.downloaded_update:
             QTimer.singleShot(250, self.install_downloaded_update)
@@ -1402,8 +1528,29 @@ class Window(QMainWindow):
 
     def closeEvent(self, event):
         if self.process:
-            self.close_when_stopped = True; self.stop_job(True); event.ignore(); return
-        try: self.tasks.save(); self.save_settings()
+            if self.close_when_stopped:
+                event.ignore()
+                return
+            answer = QMessageBox.question(
+                self,
+                'Закрити WhisperDesk під час роботи?',
+                'Поточна операція буде безпечно зупинена на останньому checkpoint-і. '
+                'Черга та незавершена транскрипція залишаться збереженими для наступного запуску.',
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.queue_paused = False
+            self.pause_requested = False
+            self.paused_task_id = None
+            self.close_when_stopped = True
+            self.stop_job(True)
+            event.ignore()
+            return
+        self.running_queue = False
+        self.queue_paused = False
+        try:
+            self.tasks.save(); self.save_settings()
         except OSError as exc:
             self.info(f'Не вдалося зберегти чергу: {exc}')
         event.accept()
