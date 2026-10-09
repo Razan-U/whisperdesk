@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from whisperdesk.preflight import analyze_queue, report_text
-from whisperdesk.eta import estimate_task, load_calibration, record_sample, calibration_key
+from whisperdesk.eta import (estimate_task, load_calibration, record_sample,
+                             calibration_key, migrate_calibration_from_history)
 from whisperdesk.core import fingerprint
 
 
@@ -308,3 +309,115 @@ def test_calibrated_eta_resists_single_slow_outlier(tmp_path):
     assert confidence == 'локальна · 5 замірів'
     assert high < 60
     assert low < 30.1 < high
+
+
+
+def test_eta_calibration_splits_mixed_from_fixed_language():
+    base = {'model': 'turbo', 'device': 'auto', 'profile': 'fast', 'threads': 0}
+    en = {**base, 'language': 'en', '_eta_backend': 'cuda'}
+    uk = {**base, 'language': 'uk', '_eta_backend': 'cuda'}
+    mixed = {**base, 'language': 'mixed', '_eta_backend': 'cuda'}
+
+    assert calibration_key(en) == calibration_key(uk)
+    assert calibration_key(en) != calibration_key(mixed)
+
+
+def test_eta_v2_migrates_backend_and_language_from_history(tmp_path):
+    import json
+
+    # Legacy v1 samples are ambiguous and must not be reused directly.
+    (tmp_path / 'eta-calibration.json').write_text(
+        json.dumps({
+            'version': 1,
+            'profiles': {'turbo|auto|fast|4': {'samples': [0.05, 0.13]}},
+        }),
+        encoding='utf-8',
+    )
+    records = [
+        {
+            'status': 'done',
+            'audio_seconds': 1200,
+            'elapsed_seconds': 60,
+            'model': 'turbo',
+            'requested_device': 'auto',
+            'actual_device': 'cuda',
+            'profile': 'fast',
+            'threads': 4,
+            'language': 'en',
+        },
+        {
+            'status': 'done',
+            'audio_seconds': 1200,
+            'elapsed_seconds': 160,
+            'model': 'turbo',
+            'requested_device': 'auto',
+            'actual_device': 'cuda',
+            'profile': 'fast',
+            'threads': 4,
+            'language': 'mixed',
+        },
+    ]
+
+    assert migrate_calibration_from_history(tmp_path, records) is True
+    calibration = load_calibration(tmp_path)
+
+    fixed_key = calibration_key({
+        'model': 'turbo', 'device': 'auto', 'profile': 'fast', 'threads': 4,
+        'language': 'en', '_eta_backend': 'cuda',
+    })
+    mixed_key = calibration_key({
+        'model': 'turbo', 'device': 'auto', 'profile': 'fast', 'threads': 4,
+        'language': 'mixed', '_eta_backend': 'cuda',
+    })
+
+    assert calibration[fixed_key]['samples'] == [0.05]
+    assert round(calibration[mixed_key]['samples'][0], 3) == 0.133
+    assert migrate_calibration_from_history(tmp_path, records) is False
+
+
+def test_preflight_uses_separate_auto_cuda_eta_for_mixed_and_fixed(tmp_path, monkeypatch):
+    import whisperdesk.preflight as preflight
+
+    (tmp_path / 'sessions').mkdir()
+    source = tmp_path / 'audio.wav'
+    source.write_bytes(b'audio')
+    monkeypatch.setattr(
+        preflight,
+        'analyze_hardware',
+        lambda: {
+            'cpu_logical': 12,
+            'ram_bytes': 16 * 1024**3,
+            'gpus': [{'name': 'NVIDIA Test', 'vram_bytes': 4 * 1024**3}],
+            'cuda_count': 1,
+            'cuda_available': True,
+        },
+    )
+
+    fixed_settings = task(
+        tmp_path, source, duration=1200, end=1200,
+        model='turbo', device='auto', profile='fast', language='en',
+    )
+    mixed_settings = dict(fixed_settings)
+    mixed_settings['language'] = 'mixed'
+    mixed_settings['id'] = '2'
+    mixed_settings['session'] = str(tmp_path / 'sessions' / '2.jsonl')
+
+    assert record_sample(
+        tmp_path, fixed_settings, 1200, 60, actual_device='cuda'
+    )
+    assert record_sample(
+        tmp_path, mixed_settings, 1200, 160, actual_device='cuda'
+    )
+
+    fixed_report = preflight.analyze_queue(
+        [fixed_settings], tmp_path / 'models', tmp_path,
+        ready_checker=lambda path: True,
+    )
+    mixed_report = preflight.analyze_queue(
+        [mixed_settings], tmp_path / 'models', tmp_path,
+        ready_checker=lambda path: True,
+    )
+
+    assert fixed_report['eta_confidence'] == 'локальна · 1 замір'
+    assert mixed_report['eta_confidence'] == 'локальна · 1 замір'
+    assert mixed_report['eta_min_seconds'] > fixed_report['eta_max_seconds']
