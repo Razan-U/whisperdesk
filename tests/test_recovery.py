@@ -107,3 +107,52 @@ def test_checkpoint_owns_queue_progress_even_if_ui_crashes(tmp_path):
     restored=TaskQueue(tmp_path)
     assert restored.tasks[0]['position']==16
     assert restored.tasks[0]['status']=='interrupted'
+
+
+
+def test_pending_task_with_committed_checkpoint_becomes_interrupted(tmp_path):
+    q = TaskQueue(tmp_path)
+    task = q.add('a.wav', 30, DEFAULTS)
+    Path(task['session']).parent.mkdir()
+    with open(task['session'], 'w', encoding='utf-8') as f:
+        write_record(f, {
+            'type': 'job',
+            'version': 2,
+            'source': task['source'],
+            'start': 0,
+            'end': 30,
+            'model': 'base',
+            'language': 'uk',
+            'fingerprint': {'size': 0, 'mtime_ns': 0},
+        })
+        write_record(f, {
+            'type': 'checkpoint',
+            'position': 16,
+            'language': 'uk',
+            'rows': [{'start': 1, 'end': 2, 'text': 'відновлено', 'language': 'uk'}],
+        })
+
+    # Simulate power loss before the UI managed to persist running/interrupted.
+    task['status'] = 'pending'
+    task['position'] = 0
+    q.save()
+
+    restored = TaskQueue(tmp_path)
+    item = restored.get(task['id'])
+    assert item['status'] == 'interrupted'
+    assert item['position'] == 16
+    assert Path(item['session']).with_suffix('.txt').read_text(encoding='utf-8').strip() == 'відновлено'
+
+
+def test_reconciled_crash_state_is_saved_back_to_queue(tmp_path):
+    q = TaskQueue(tmp_path)
+    task = q.add('a.wav', 20, DEFAULTS)
+    task['status'] = 'running'
+    q.save()
+
+    restored = TaskQueue(tmp_path)
+    assert restored.get(task['id'])['status'] == 'interrupted'
+
+    # A second restart sees the already-normalized state, not stale "running".
+    restored_again = TaskQueue(tmp_path)
+    assert restored_again.get(task['id'])['status'] == 'interrupted'
