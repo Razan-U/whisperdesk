@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONUTF8: "1"
-      WHISPERDESK_DATA: ${{ runner.temp }}\\whisperdesk-controlled-tests
+      WHISPERDESK_DATA: ${{ github.workspace }}/whisperdesk-controlled-tests
     steps:
       - name: Check out approved branch
         uses: actions/checkout@v4
