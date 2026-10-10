@@ -1,0 +1,62 @@
+name: Controlled Windows tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Approved test suite"
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controlled-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      WHISPERDESK_DATA: ${{ runner.temp }}\\whisperdesk-controlled-tests
+    steps:
+      - name: Check out approved branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest
+
+      - name: Run selected tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:WHISPERDESK_DATA" | Out-Null
+          if ("${{ inputs.suite }}" -eq "smoke") {
+            python -m pytest -q -x --junitxml=test-results.xml
+          } else {
+            python -m pytest -q --junitxml=test-results.xml
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controlled-tests-${{ inputs.suite }}-${{ github.run_id }}
+          path: test-results.xml
+          if-no-files-found: warn
+          retention-days: 14
