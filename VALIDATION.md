@@ -8,8 +8,29 @@ Job → UI controller → ETA calibration для mixed/fixed і Auto→CPU,
 одноразове відновлення calibration v2 у v3 зі збереженням backup,
 некоректні JSON/config payloads та UTF-8 PowerShell hardware probe.
 
-Ці автоматичні результати не замінюють тест встановленого release-пакета.
-Результати запуску після оновлення буде додано окремим записом.
+GitHub Windows release CI: 109 passed / 3 skipped (FFmpeg fixture generation),
+Setup / Update / Launcher build succeeded. Release commit: 0bb86f6.
+
+Після встановлення опублікованого Update beta.17 → beta.18 перевірено:
+- UI повідомив успішне оновлення, усі Python-модулі відповідають release source;
+- history.json і queue.json збережено побайтово до нових тестових прогонів;
+- усі чотири моделі та користувацькі налаштування збережені;
+- calibration v3 створено, попередній файл залишився як backup;
+- installed-package regression: 112 passed / 8,37 с, warnings-as-errors;
+- fixed/en + turbo + Auto→CUDA, 10 хв аудіо: 45,391 с (ETA 25–60 с);
+- mixed UK/EN/RU на тому самому діапазоні: 89,609 с (ETA ≈1–2 хв);
+- fixed-прогін збільшив лише fixed bucket 7→8; mixed-прогін збільшив лише
+  mixed bucket 4→5, fixed залишився 8;
+- обидва сеанси мають complete JSONL, збережений TXT і done History record;
+- повторний UTF-8 hardware probe не дає reader-thread decoding errors.
+
+Вбудований updater завантажив і перевірив SHA-256 пакета. Admin-встановлення
+завершив власник ПК: керування підвищеним вікном з агента завершилося timeout,
+а спробу transactional update без адміністратора Windows відхилила WinError 5.
+
+Перевірка не включала clean install, довгий повторний ETA acceptance run або
+реальний GPU fault; Auto→CPU routing покрито регресійним тестом.
+PR #3 залишається відкритим, Stable 0.4 у межах цього тесту не випускався.
 
 ## Історична перевірка 0.3.0
 

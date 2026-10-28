@@ -13,9 +13,11 @@ Stable: **0.3.1**. Поточний Test: **0.3.2-beta.18**.
 - Виправлено UTF-8 для hardware probe через PowerShell.
 - Прибрано невикористаний код і недосяжну гілку рекомендацій.
 
-Автоматичні тести beta.18: 112 passed, warnings treated as errors,
-Windows / embedded Python 3.12.10. Результати реальної перевірки оновлення
-додаються в VALIDATION.md та Roadmap після встановлення пакета.
+Автоматичні тести beta.18: локально й після встановлення 112 passed,
+warnings treated as errors, Windows / embedded Python 3.12.10.
+GitHub CI: 109 passed / 3 skipped. Реальний 10-хвилинний CUDA-тест:
+fixed/en 45,391 с; mixed 89,609 с. Нові ETA buckets оновлюються окремо.
+Подробиці встановлення та межі перевірки — у VALIDATION.md та Roadmap.
 
 Локальна транскрипція аудіо, черга файлів та відновлення після переривання.
 Світла й нічна ретро-теми, 8 акцентних кольорів, іконка диктофона.
