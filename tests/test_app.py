@@ -176,3 +176,350 @@ def test_ui_smoke(tmp_path, monkeypatch, audio):
     assert '[00:00:13' in w.text.toPlainText()
     w.close()
     app.processEvents()
+
+
+def test_preflight_cancel_preserves_queue_state(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    from whisperdesk.ui import Window
+
+    app = QApplication.instance() or QApplication([])
+    w = Window(auto_start=False)
+    w.add_files([str(audio)])
+    task = w.selected()
+    task['status'] = 'error'
+    task['error'] = 'previous failure'
+    w.tasks.save()
+
+    monkeypatch.setattr(w, 'confirm_preflight', lambda: False)
+    w.start_queue()
+
+    assert not w.running_queue
+    assert w.process is None
+    assert task['status'] == 'error'
+    assert task['error'] == 'previous failure'
+    w.close()
+    app.processEvents()
+
+
+def test_settings_show_hardware_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QDialog, QLabel
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    monkeypatch.setattr(
+        ui_module,
+        'analyze_hardware',
+        lambda: {
+            'cpu_logical': 16,
+            'ram_bytes': 32 * 1024**3,
+            'gpus': [{'name': 'NVIDIA Test GPU', 'vram_bytes': 8 * 1024**3}],
+            'cuda_count': 1,
+            'cuda_available': True,
+        },
+    )
+    monkeypatch.setattr(QDialog, 'exec', lambda self: 0)
+
+    w.open_settings()
+
+    texts = [item.text() for item in w.findChildren(QLabel)]
+    assert any('CPU: 16 потоків' in text for text in texts)
+    assert any('NVIDIA Test GPU' in text for text in texts)
+    assert any('CUDA доступна' in text for text in texts)
+    w.close()
+    app.processEvents()
+
+
+
+def test_recommendation_dialog_reject_keeps_current_choice(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    task = w.selected()
+    assert task['model'] == 'base'
+    assert task['device'] == 'cpu'
+
+    seen = {}
+    def fake_exec(dialog):
+        seen['buttons'] = [b.text() for b in dialog.findChildren(QPushButton)]
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, 'exec', fake_exec)
+    applied = w.show_recommendation(
+        {
+            'recommendation': {
+                'model': 'turbo',
+                'device': 'auto',
+                'reason': 'Тестова рекомендація.',
+            }
+        }
+    )
+
+    assert applied is False
+    assert 'Відхилити' in seen['buttons']
+    assert '✓  Застосувати' in seen['buttons']
+    assert task['model'] == 'base'
+    assert task['device'] == 'cpu'
+    w.close()
+    app.processEvents()
+
+
+
+def test_repeat_history_record_recreates_task_with_same_settings(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+
+    record = {
+        'source': str(audio),
+        'duration': 55.0,
+        'start': 5.0,
+        'end': 25.0,
+        'language': 'mixed',
+        'model': 'small',
+        'requested_device': 'auto',
+        'profile': 'fast',
+        'threads': 3,
+    }
+
+    assert w.repeat_history_record(record) is True
+    task = w.tasks.tasks[-1]
+    assert task['source'] == str(audio.resolve())
+    assert task['start'] == 5.0
+    assert task['end'] == 25.0
+    assert task['language'] == 'mixed'
+    assert task['model'] == 'small'
+    assert task['device'] == 'auto'
+    assert task['profile'] == 'fast'
+    assert task['threads'] == 3
+    assert task['status'] == 'pending'
+    w.close()
+    app.processEvents()
+
+
+def test_repeat_history_full_file_tracks_new_duration(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+
+    record = {
+        'source': str(audio),
+        'duration': 55.0,
+        'start': 0.0,
+        'end': 55.0,
+        'language': 'uk',
+        'model': 'base',
+        'requested_device': 'cpu',
+        'profile': 'eco',
+        'threads': 0,
+    }
+
+    assert w.repeat_history_record(record) is True
+    task = w.tasks.tasks[-1]
+    assert task['start'] == 0.0
+    assert task['end'] == task['duration'] == 55
+    w.close()
+    app.processEvents()
+
+
+
+class _DummyCancelEvent:
+    def __init__(self):
+        self.was_set = False
+
+    def set(self):
+        self.was_set = True
+
+
+class _DummyCloseEvent:
+    def __init__(self):
+        self.accepted = False
+        self.ignored = False
+
+    def accept(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.ignored = True
+
+
+def test_pause_resume_queue_preserves_task_for_safe_resume(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    task = w.selected()
+    task['status'] = 'running'
+    task['position'] = 12.0
+    w.tasks.save()
+
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.operation = 'transcribe'
+    w.active_id = task['id']
+    w.running_queue = True
+
+    w.pause_queue()
+
+    assert cancel.was_set is True
+    assert w.queue_paused is True
+    assert w.pause_requested is True
+    assert w.paused_task_id == task['id']
+    assert w.running_queue is True
+
+    # Simulate the worker having stopped at the safe checkpoint.
+    w.process = None
+    w.pause_requested = False
+    task['status'] = 'interrupted'
+    called = []
+    monkeypatch.setattr(w, 'next_task', lambda: called.append(True))
+
+    w.resume_queue()
+
+    assert w.queue_paused is False
+    assert w.running_queue is True
+    assert task['status'] == 'pending'
+    assert task['position'] == 12.0
+    assert w.paused_task_id is None
+
+    w.running_queue = False
+    w.close()
+    app.processEvents()
+
+
+def test_stop_queue_reject_keeps_active_processing(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    w.request_stop_queue()
+
+    assert cancel.was_set is False
+    assert w.running_queue is True
+
+    w.process = None
+    w.running_queue = False
+    w.close()
+    app.processEvents()
+
+
+def test_stop_queue_confirm_requests_safe_cancel(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    w.request_stop_queue()
+
+    assert cancel.was_set is True
+    assert w.running_queue is False
+    assert w.cancel_deadline is not None
+
+    w.process = None
+    w.close()
+    app.processEvents()
+
+
+def test_close_active_job_can_be_cancelled_by_user(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    event = _DummyCloseEvent()
+    w.closeEvent(event)
+
+    assert event.ignored is True
+    assert event.accepted is False
+    assert cancel.was_set is False
+    assert w.close_when_stopped is False
+
+    w.process = None
+    w.running_queue = False
+    w.close()
+    app.processEvents()
+
+
+def test_close_active_job_confirmed_requests_safe_stop(tmp_path, monkeypatch, audio):
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    import whisperdesk.ui as ui_module
+
+    app = QApplication.instance() or QApplication([])
+    w = ui_module.Window(auto_start=False)
+    w.add_files([str(audio)])
+    cancel = _DummyCancelEvent()
+    w.process = object()
+    w.cancel_event = cancel
+    w.running_queue = True
+
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    event = _DummyCloseEvent()
+    w.closeEvent(event)
+
+    assert event.ignored is True
+    assert cancel.was_set is True
+    assert w.close_when_stopped is True
+    assert w.running_queue is False
+
+    w.process = None
+    w.close_when_stopped = False
+    w.close()
+    app.processEvents()

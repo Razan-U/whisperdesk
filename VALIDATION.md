@@ -1,4 +1,93 @@
-# Перевірка WhisperDesk 0.3.0
+# Перевірка WhisperDesk
+
+## 0.4.0 — підвищення перевіреного RC до Stable
+
+Код застосунку відповідає 0.4.0-rc.1; змінено лише номер версії.
+RC пройшов чисту інсталяцію на Windows CI й оновлення beta.18 на ПК власника
+через вбудований updater. SHA-256 завантаженого Update перевірено.
+Власник підтвердив адміністративне встановлення.
+
+- Усі 16 Python-модулів встановленого RC відповідають release source.
+- History, queue та calibration збережені побайтово до нових тестів.
+- Чотири моделі й користувацькі налаштування збережені; тимчасовий EN default
+  після fixed тесту повернено до початкового mixed.
+- Installed-package regression: 116 passed / 14,35 с, `-W error`.
+- Реальний installed turbo + Auto→CUDA smoke, 120 с локального аудіо:
+  fixed EN 15,469 с, 16 сегментів; mixed 25,094 с, 18 сегментів.
+  Обидва journals complete, без помилок; ізольовані тестові сеанси не змінюють
+  користувацьку чергу, History або ETA calibration.
+- Релізний RC CI: 113 passed / 3 skipped / 13,44 с; clean_install і ui_smoke passed.
+  https://github.com/Razan-U/whisperdesk/actions/runs/40696284853
+
+Умови підвищення RC до Stable виконано. Stable pipeline повторно запускає
+тести, збірку та clean-install gate перед публікацією 0.4.0.
+
+## 0.4.0-rc.1 — приймальна перевірка, 28 жовтня 2026
+
+Перевірка довгого аудіо виконувалася у встановленій beta.18 на Windows x64,
+NVIDIA CUDA, turbo, Auto, fast, потоки Auto. Файл був на ПК; додаткове аудіо
+з інтернету не завантажувалося. Повна тривалість — 9038,08 с (02:30:38).
+
+- Mixed UK/EN/RU: Preflight 18–26 хв (точні межі 1061,64–1537,09 с),
+  фактично 1191,219 с (19:51), CUDA, без пауз і fallback.
+- Журнал complete, 1496 сегментів, 71069 символів TXT; TXT відповідає журналу.
+  Присутні UK/EN/RU; новий замір потрапив лише у mixed bucket, fixed не змінився.
+- Fixed EN: Preflight 5–17 хв (точні межі 287,00–1044,84 с), фактично
+  435,953 с (7:16), CUDA, без пауз і fallback. Журнал complete, 1115 сегментів,
+  72408 символів TXT; TXT відповідає журналу, часові межі сегментів коректні.
+  Fixed bucket зріс 8→9; mixed залишився 6. Обидва результати всередині ETA.
+- Локальна регресія коду кандидата: 116 passed / 13,25 с, `-W error`.
+- Додатково виправлено початковий діапазон turbo/CUDA без локальних замірів:
+  попередня нижня межа виключала раніше виміряні 19:31 → 50 с та
+  02:30:38 → 440 с. Чотири тести для Auto/CUDA падали зі старою межею,
+  проходять після зміни та перевіряють звуження прогнозу після першого заміру.
+- CI до версіонування RC (dc21591): 109 passed / 3 skipped; справжній Setup
+  установлено в нову папку на одноразовому Windows runner. Включений Python
+  імпортував модулі та відкрив/закрив Qt UI з порожньою власною Data.
+  `installer-smoke.json`: clean_install=passed, ui_smoke=passed.
+  Запуск: https://github.com/Razan-U/whisperdesk/actions/runs/40692204347
+- CI кандидата c8b68d3: 113 passed / 3 skipped / 9,53 с; Setup, Update,
+  Launcher і справжня чиста інсталяція з Qt UI пройшли успішно.
+  Пропуски стосуються створення FFmpeg fixtures; ці тести пройшли локально.
+  Запуск: https://github.com/Razan-U/whisperdesk/actions/runs/40695290826
+
+Довгі fixed/mixed перевірки, публікація RC та оновлення beta.18 завершені.
+Після встановлення RC збереження даних і smoke підтверджені (див. вище).
+
+
+## 0.3.2-beta.18 — 28 жовтня 2026
+
+Windows x64, embedded Python 3.12.10, наявні залежності встановленого beta.17.
+112 tests passed, 0 warnings (`-W error`). Нові регресійні сценарії охоплюють
+Job → UI controller → ETA calibration для mixed/fixed і Auto→CPU,
+одноразове відновлення calibration v2 у v3 зі збереженням backup,
+некоректні JSON/config payloads та UTF-8 PowerShell hardware probe.
+
+GitHub Windows release CI: 109 passed / 3 skipped (FFmpeg fixture generation),
+Setup / Update / Launcher build succeeded. Release commit: 0bb86f6.
+
+Після встановлення опублікованого Update beta.17 → beta.18 перевірено:
+- UI повідомив успішне оновлення, усі Python-модулі відповідають release source;
+- history.json і queue.json збережено побайтово до нових тестових прогонів;
+- усі чотири моделі та користувацькі налаштування збережені;
+- calibration v3 створено, попередній файл залишився як backup;
+- installed-package regression: 112 passed / 8,37 с, warnings-as-errors;
+- fixed/en + turbo + Auto→CUDA, 10 хв аудіо: 45,391 с (ETA 25–60 с);
+- mixed UK/EN/RU на тому самому діапазоні: 89,609 с (ETA ≈1–2 хв);
+- fixed-прогін збільшив лише fixed bucket 7→8; mixed-прогін збільшив лише
+  mixed bucket 4→5, fixed залишився 8;
+- обидва сеанси мають complete JSONL, збережений TXT і done History record;
+- повторний UTF-8 hardware probe не дає reader-thread decoding errors.
+
+Вбудований updater завантажив і перевірив SHA-256 пакета. Admin-встановлення
+завершив власник ПК: керування підвищеним вікном з агента завершилося timeout,
+а спробу transactional update без адміністратора Windows відхилила WinError 5.
+
+Перевірка не включала clean install, довгий повторний ETA acceptance run або
+реальний GPU fault; Auto→CPU routing покрито регресійним тестом.
+PR #3 залишається відкритим, Stable 0.4 у межах цього тесту не випускався.
+
+## Історична перевірка 0.3.0
 
 28 вересня 2026. Linux x64, Python 3.12, Qt offscreen.
 
