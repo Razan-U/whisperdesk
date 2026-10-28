@@ -7,6 +7,9 @@ Feature freeze starts after v0.3.2-beta.15. No new 0.4 features are added unless
 - Build embedded Windows payload.
 - Compile Launcher, Update and Setup installers.
 - Verify non-empty build outputs.
+- Install Setup into a fresh directory on the disposable Windows runner.
+- Run the installed embedded Python and Qt UI against its own empty Data folder.
+- Retain installer-smoke.json with the build artifacts.
 - Updater semver/channel/integrity/fallback tests.
 - Queue persistence/restart tests.
 - Journal/checkpoint/partial-write recovery tests.

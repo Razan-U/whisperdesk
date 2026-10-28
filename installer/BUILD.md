@@ -58,8 +58,14 @@ Do not distribute the source ZIP as if it were the installer.
 
 Pull requests run the full pytest suite on Windows and assemble both NSIS installers.
 The resulting test executables are attached to the workflow run as an artifact.
+Both PR and release workflows also silently install Setup into a fresh directory
+on the disposable Windows runner, then use that installation's embedded Python
+to import the engine and open/close the Qt window with an empty data directory.
+The runtime path, data path, version and result are saved in installer-smoke.json.
+This check never runs against a personal installation.
 
-After approval and merge, create a branch named `release/vX.Y.Z` from the exact
+For Test candidates, create `release/vX.Y.Z-rc.N` from the tested feature commit.
+For Stable, after approval and merge, create `release/vX.Y.Z` from the exact
 main commit to publish. The release workflow validates that
 `whisperdesk.__version__` matches the branch, rebuilds and tests the application,
 creates SHA-256 sidecars, and publishes a GitHub Release.

@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from whisperdesk.preflight import analyze_queue, report_text
 from whisperdesk.eta import (estimate_task, load_calibration, record_sample,
@@ -421,3 +422,19 @@ def test_preflight_uses_separate_auto_cuda_eta_for_mixed_and_fixed(tmp_path, mon
     assert fixed_report['eta_confidence'] == 'локальна · 1 замір'
     assert mixed_report['eta_confidence'] == 'локальна · 1 замір'
     assert mixed_report['eta_min_seconds'] > fixed_report['eta_max_seconds']
+
+
+@pytest.mark.parametrize('device', ['auto', 'cuda'])
+@pytest.mark.parametrize('audio_seconds,actual_seconds', [(1171, 50), (9038.08, 440)])
+def test_cold_turbo_eta_covers_observed_gpu_runs_and_learns(tmp_path, device, audio_seconds, actual_seconds):
+    # Acceptance measurements on the real NVIDIA PC, before local calibration.
+    settings = {'model': 'turbo', 'device': device, 'profile': 'fast',
+                'threads': 0, 'language': 'en', '_eta_backend': 'cuda'}
+    first_low, first_high, _ = estimate_task(settings, audio_seconds)
+    assert first_low <= actual_seconds <= first_high
+
+    assert record_sample(tmp_path, settings, audio_seconds, actual_seconds, actual_device='cuda')
+    low, high, confidence = estimate_task(settings, audio_seconds, load_calibration(tmp_path))
+    assert low <= actual_seconds <= high
+    assert high - low < (first_high - first_low) / 2
+    assert confidence == 'локальна · 1 замір'
