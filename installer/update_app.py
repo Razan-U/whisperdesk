@@ -89,7 +89,6 @@ def replace_app(install, source, validate=True):
 
     stage = install / ('.update-' + uuid.uuid4().hex)
     backup = install / ('app-backup-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
-    swapped = False
     try:
         shutil.copytree(source, stage)
         for name in ('data-path.txt', 'install.json'):
@@ -110,7 +109,6 @@ def replace_app(install, source, validate=True):
         app.rename(backup)
         try:
             stage.rename(app)
-            swapped = True
             if validate:
                 smoke_test(install)
                 marker = {
@@ -126,7 +124,6 @@ def replace_app(install, source, validate=True):
             if app.exists():
                 shutil.rmtree(app)
             backup.rename(app)
-            swapped = False
             raise
         return backup
     finally:

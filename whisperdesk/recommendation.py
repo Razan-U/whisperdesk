@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-from .core import MODELS
-
 GB = 1024 ** 3
 
 
@@ -19,7 +17,7 @@ def _largest_vram(info):
     return max(values) if values else None
 
 
-def recommend(hardware, audio_seconds, profile='eco'):
+def recommend(hardware, audio_seconds):
     """Return a non-binding recommendation for one queue run.
 
     The rules are intentionally conservative. A recommendation should reduce
@@ -72,26 +70,11 @@ def recommend(hardware, audio_seconds, profile='eco'):
             model = 'small'
             reason = 'Без CUDA small дає кращий баланс якості та часу на цьому CPU; turbo/large-v3 можуть бути значно повільнішими.'
 
-    if profile == 'fast' and device == 'cpu' and model == 'base' and cpu_threads >= 8 and (ram is None or ram >= 12 * GB) and hours < 1.5:
-        model = 'small'
-        reason = 'Профіль «Більше потоків» і достатні ресурси дозволяють рекомендувати small на CPU.'
-
     return {
         'model': model,
         'device': device,
         'reason': reason,
     }
-
-
-def recommendation_text(item):
-    if not item:
-        return ''
-    device_names = {'cpu': 'CPU', 'auto': 'Авто', 'cuda': 'NVIDIA CUDA'}
-    model = MODELS.get(item.get('model'), (item.get('model', 'невідома модель'), '', ''))[0]
-    device = device_names.get(item.get('device'), item.get('device', 'невідомий режим'))
-    reason = item.get('reason', '').strip()
-    return f'{model} + {device}' + (f' — {reason}' if reason else '')
-
 
 
 def apply_recommendation(tasks, item):

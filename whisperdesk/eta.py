@@ -2,10 +2,13 @@
 from pathlib import Path
 import json
 import statistics
+import math
+import shutil
+import time
 
 from .core import atomic_text, thread_count
 
-CALIBRATION_VERSION = 2
+CALIBRATION_VERSION = 3
 CALIBRATION_FILE = 'eta-calibration.json'
 MAX_SAMPLES = 12
 
@@ -47,9 +50,22 @@ def load_calibration(root):
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError, TypeError):
         return {}
-    if data.get('version') != CALIBRATION_VERSION or not isinstance(data.get('profiles'), dict):
+    if not isinstance(data, dict) or data.get('version') != CALIBRATION_VERSION or not isinstance(data.get('profiles'), dict):
         return {}
-    return data['profiles']
+    return {key: {'samples': _clean_samples(item.get('samples', []))}
+            for key, item in data['profiles'].items() if isinstance(item, dict)}
+
+
+def _clean_samples(samples):
+    clean = []
+    for value in samples if isinstance(samples, list) else []:
+        try:
+            value = float(value)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if math.isfinite(value) and 0.01 <= value <= 20:
+            clean.append(value)
+    return clean
 
 
 def record_sample(root, task, audio_seconds, elapsed_seconds, actual_device=None):
@@ -87,11 +103,11 @@ def record_sample(root, task, audio_seconds, elapsed_seconds, actual_device=None
 
 
 def migrate_calibration_from_history(root, records):
-    """One-time v2 migration from local History.
+    """Rebuild v1/v2 calibration from authoritative History into schema v3.
 
-    v1 mixed Auto samples cannot be separated reliably because the old file did
-    not store actual backend or language mode. History does, so rebuild from
-    completed local runs instead of guessing.
+    v1 lacks backend/language dimensions; v2's UI writer omitted language and
+    lost requested Auto during CPU fallback. History retains these fields, so
+    rebuild completed runs instead of retaining contaminated calibration.
     """
     root = Path(root)
     path = root / CALIBRATION_FILE
@@ -99,7 +115,8 @@ def migrate_calibration_from_history(root, records):
         current = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError, TypeError):
         current = None
-    if isinstance(current, dict) and current.get('version') == CALIBRATION_VERSION:
+    if (isinstance(current, dict) and current.get('version') == CALIBRATION_VERSION
+            and isinstance(current.get('profiles'), dict)):
         return False
 
     profiles = {}
@@ -117,11 +134,15 @@ def migrate_calibration_from_history(root, records):
         rtf = elapsed / audio
         if not 0.01 <= rtf <= 20:
             continue
+        try:
+            threads = int(record.get('threads') or 0)
+        except (ValueError, TypeError, OverflowError):
+            continue
         task = {
             'model': record.get('model', ''),
             'device': record.get('requested_device', 'cpu'),
             'profile': record.get('profile', 'eco'),
-            'threads': int(record.get('threads') or 0),
+            'threads': threads,
             'language': record.get('language', 'uk'),
         }
         key = calibration_key(task, actual)
@@ -130,12 +151,14 @@ def migrate_calibration_from_history(root, records):
         item['samples'] = item['samples'][-MAX_SAMPLES:]
 
     payload = {'version': CALIBRATION_VERSION, 'profiles': profiles}
+    if path.exists():
+        shutil.copy2(path, path.with_name(f'eta-calibration-before-v3-{time.time_ns()}.json'))
     atomic_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
     return True
 
 
 def _calibrated_range(samples):
-    clean = sorted(float(x) for x in samples if 0.01 <= float(x) <= 20)
+    clean = sorted(_clean_samples(samples))
     if not clean:
         return None
     center = statistics.median(clean)
@@ -173,7 +196,8 @@ def estimate_task(task, remaining_seconds, calibration=None):
 
     if local:
         low, high, confidence = local
-        overhead = OVERHEAD['cuda'] if device == 'cuda' else OVERHEAD['cpu']
+        backend = task.get('_eta_backend') if device == 'auto' else device
+        overhead = OVERHEAD['cuda'] if backend == 'cuda' else OVERHEAD['cpu']
     elif device == 'cpu':
         low, high = MODEL_RTF[model]['cpu']
         scale = _cpu_scale(task)

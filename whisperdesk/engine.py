@@ -1,6 +1,5 @@
 """Spawn-safe worker; Qt never imports inference libraries in its UI thread."""
 from pathlib import Path
-import json
 import os
 import time
 import traceback
@@ -59,7 +58,6 @@ def transcribe_job(job, queue, cancel, model_factory=None):
             # Persist synchronously BEFORE native CUDA calls. The UI can recover
             # even if the process dies before multiprocessing.Queue flushes.
             Path(job.session + '.gpu-attempt').write_text('cuda', encoding='ascii')
-            queue.put(('gpu_attempt', True))
             if model_factory is None:
                 from .gpu import ensure_gpu
                 ensure_gpu(data_dir(), queue, cancel)

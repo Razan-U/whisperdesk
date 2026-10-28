@@ -22,7 +22,8 @@ def load_marker(root):
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError, TypeError):
         return None
-    if data.get('version') != MARKER_VERSION:
+    if not isinstance(data, dict) or data.get('version') != MARKER_VERSION:
+        path.rename(path.with_name(f'active-run-damaged-{time.time_ns()}.json'))
         return None
     return data
 

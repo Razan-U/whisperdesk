@@ -1,4 +1,17 @@
-# Перевірка WhisperDesk 0.3.0
+# Перевірка WhisperDesk
+
+## 0.3.2-beta.18 — 28 жовтня 2026
+
+Windows x64, embedded Python 3.12.10, наявні залежності встановленого beta.17.
+112 tests passed, 0 warnings (`-W error`). Нові регресійні сценарії охоплюють
+Job → UI controller → ETA calibration для mixed/fixed і Auto→CPU,
+одноразове відновлення calibration v2 у v3 зі збереженням backup,
+некоректні JSON/config payloads та UTF-8 PowerShell hardware probe.
+
+Ці автоматичні результати не замінюють тест встановленого release-пакета.
+Результати запуску після оновлення буде додано окремим записом.
+
+## Історична перевірка 0.3.0
 
 28 вересня 2026. Linux x64, Python 3.12, Qt offscreen.
 

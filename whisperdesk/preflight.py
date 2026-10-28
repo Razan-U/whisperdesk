@@ -4,11 +4,11 @@ from pathlib import Path
 import os
 import shutil
 
-from .core import MODELS, validate_range, recovery, fingerprint
+from .core import MODELS, validate_range, recovery, fingerprint, clock
 from .engine import model_ready
 from .eta import estimate_task, format_eta, load_calibration
-from .hardware import analyze_hardware, hardware_summary, hardware_messages
-from .recommendation import recommend, recommendation_text
+from .hardware import analyze_hardware, hardware_messages
+from .recommendation import recommend
 
 MODEL_BYTES = {
     'base': 150 * 1024**2,
@@ -206,9 +206,7 @@ def analyze_queue(tasks, model_folder, root, ready_checker=model_ready):
             )
 
     if report.get('hardware'):
-        profiles = [task.get('profile', 'eco') for task in candidates]
-        profile = profiles[0] if profiles and len(set(profiles)) == 1 else 'eco'
-        report['recommendation'] = recommend(report['hardware'], report['seconds'], profile)
+        report['recommendation'] = recommend(report['hardware'], report['seconds'])
 
     if report['devices'].get('auto', 0) and not (
             report.get('hardware') and report['hardware'].get('cuda_available')):
@@ -225,7 +223,7 @@ def report_text(report):
     """Human-readable Ukrainian summary used by the preflight dialog."""
     lines = [
         f'Файлів до запуску: {report["count"]}',
-        f'Аудіо до обробки: {_clock(report["seconds"])}',
+        f'Аудіо до обробки: {clock(report["seconds"])}',
     ]
     if report.get('eta_max_seconds', 0) > 0:
         lines.append(
@@ -252,6 +250,3 @@ def report_text(report):
     return '\n'.join(lines)
 
 
-def _clock(seconds):
-    seconds = max(0, int(seconds))
-    return f'{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}'

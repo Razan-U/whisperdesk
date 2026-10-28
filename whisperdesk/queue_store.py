@@ -11,7 +11,14 @@ class TaskQueue:
         self.path = self.root / 'queue.json'
         self.tasks = []
         if self.path.exists():
-            self.tasks = json.loads(self.path.read_text(encoding='utf-8'))['tasks']
+            data = json.loads(self.path.read_text(encoding='utf-8'))
+            if not isinstance(data, dict) or not isinstance(data.get('tasks'), list):
+                raise ValueError('Некоректна структура черги.')
+            self.tasks = data['tasks']
+            for task in self.tasks:
+                if (not isinstance(task, dict) or not all(k in task for k in ('id', 'source', 'session', 'start', 'end', 'duration'))
+                        or task.get('status') not in ('pending', 'running', 'interrupted', 'error', 'done')):
+                    raise ValueError('Некоректний запис черги.')
         changed = False
         for task in self.tasks:
             previous_status = task.get('status')

@@ -14,7 +14,7 @@ from PySide6.QtGui import QDesktopServices, QTextCursor, QIcon, QPixmap
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QComboBox, QFileDialog, QLineEdit, QCheckBox,
     QProgressBar, QPlainTextEdit, QMessageBox, QFrame, QListWidget, QListWidgetItem,
-    QSpinBox, QDialog, QFormLayout, QDialogButtonBox, QScrollArea)
+    QSpinBox, QDialog, QDialogButtonBox)
 from . import __version__
 from .core import (MODELS, Job, data_dir, parse_time, clock, validate_range,
                    atomic_text, transcript_text, load_session, recovery)
@@ -27,6 +27,7 @@ from .preflight import analyze_queue, report_text
 from .eta import record_sample, migrate_calibration_from_history
 from .hardware import analyze_hardware, hardware_summary
 from .recommendation import apply_recommendation
+from .settings import load_settings
 from .updater import (auto_check_due, check_for_update, download_update,
                       launch_installer)
 from .theme import ACCENTS, stylesheet
@@ -68,20 +69,7 @@ class Window(QMainWindow):
         self.sessions.mkdir(exist_ok=True)
         self.settings = {**DEFAULTS, 'night': False, 'accent': 0, 'update_channel': 'stable',
                          'history_auto_cleanup': True, 'history_retention_months': 3}
-        try:
-            self.settings.update(json.loads((self.root / 'settings.json').read_text(encoding='utf-8')))
-        except (OSError, ValueError):
-            pass
-        self.settings['accent'] = max(0, min(7, int(self.settings.get('accent', 0))))
-        if self.settings.get('update_channel') not in ('stable', 'test'):
-            self.settings['update_channel'] = 'stable'
-        self.settings['history_auto_cleanup'] = bool(self.settings.get('history_auto_cleanup', True))
-        try:
-            self.settings['history_retention_months'] = max(
-                1, min(60, int(self.settings.get('history_retention_months', 3)))
-            )
-        except (TypeError, ValueError):
-            self.settings['history_retention_months'] = 3
+        self.settings, self.settings_warning = load_settings(self.root, self.settings)
         self.queue_warning = None
         try:
             self.tasks = TaskQueue(self.root)
@@ -327,6 +315,8 @@ class Window(QMainWindow):
         if previous != __version__:
             self.settings['last_seen_version'] = __version__
             self.save_settings()
+        if self.settings_warning:
+            self.info(self.settings_warning)
         if self.queue_warning:
             self.info(self.queue_warning)
         if self.history_warning:
@@ -379,9 +369,6 @@ class Window(QMainWindow):
         self.list.blockSignals(True); self.list.clear()
         for i, task in enumerate(self.tasks.tasks):
             fraction = (task.get('position', task['start']) - task['start']) / max(task['end'] - task['start'], .001)
-            text = f'{Path(task["source"]).name}\n{STATUS[task["status"]]}'
-            if task['status'] == 'running':
-                text += f' · {fraction:.0%}'
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, task['id'])
             item.setToolTip(task.get('error') or task['source'])
@@ -842,11 +829,13 @@ class Window(QMainWindow):
             if self.active_id:
                 self.history_run_started.setdefault(self.active_id, time.monotonic())
             job = args[0]
+            original_task = self.tasks.get(self.active_id) if self.active_id else None
             resume = job.resume if job.resume is not None else job.start
             self.operation_eta_sample = {
                 'task': {
                     'model': job.model,
-                    'device': job.device,
+                    'device': original_task['device'] if original_task else job.device,
+                    'language': job.language,
                     'profile': job.profile,
                     'threads': job.threads,
                 },

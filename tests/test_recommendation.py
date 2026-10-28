@@ -1,4 +1,4 @@
-from whisperdesk.recommendation import recommend, recommendation_text, apply_recommendation
+from whisperdesk.recommendation import recommend, apply_recommendation
 
 
 GB = 1024 ** 3
@@ -49,15 +49,9 @@ def test_long_cpu_workload_recommends_base():
     assert item['device'] == 'cpu'
 
 
-def test_fast_profile_can_promote_base_to_small():
-    item = recommend(hw(cpu=8, ram=16, cuda=False), 30 * 60, profile='fast')
-    assert item['model'] == 'small'
-
-
-def test_recommendation_text_is_user_facing():
-    text = recommendation_text({'model': 'turbo', 'device': 'auto', 'reason': 'Тестова причина.'})
-    assert 'Прискорена велика · turbo + Авто' in text
-    assert 'Тестова причина.' in text
+def test_cpu_recommendation_boundary():
+    assert recommend(hw(cpu=6, ram=16), 600)['model'] == 'base'
+    assert recommend(hw(cpu=7, ram=16), 600)['model'] == 'small'
 
 
 

@@ -19,7 +19,7 @@ class HistoryStore:
         self.records = []
         if self.path.exists():
             data = json.loads(self.path.read_text(encoding='utf-8'))
-            if data.get('version') != HISTORY_VERSION or not isinstance(data.get('records'), list):
+            if not isinstance(data, dict) or data.get('version') != HISTORY_VERSION or not isinstance(data.get('records'), list):
                 raise ValueError('Непідтримуваний формат історії.')
             self.records = [item for item in data['records'] if isinstance(item, dict)]
 

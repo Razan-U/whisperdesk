@@ -87,6 +87,8 @@ def _windows_video_adapters():
         return []
     command = [
         'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+        '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
+        '$OutputEncoding = [Console]::OutputEncoding; '
         'Get-CimInstance Win32_VideoController | '
         'Select-Object Name,AdapterRAM | ConvertTo-Json -Compress'
     ]
@@ -94,7 +96,8 @@ def _windows_video_adapters():
         result = subprocess.run(
             command,
             capture_output=True,
-            text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=4,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
